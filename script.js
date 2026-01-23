@@ -1,7 +1,6 @@
 
 // App de Vistoria — versão sem build (React via CDN)
-// Agora com IndexedDB (Dexie) para fotos como Blobs,
-// exifr para orientação EXIF e html2pdf para PDF.
+// IndexedDB (Dexie) para fotos como Blobs, exifr para EXIF e html2pdf para PDF.
 
 const { useState, useEffect, useRef } = React;
 
@@ -13,20 +12,21 @@ const MAX_SIDE_PX = 1920;                  // lado maior
 const JPEG_START_QUALITY = 0.85;
 const JPEG_MIN_QUALITY = 0.60;
 const PROCESS_TIMEOUT_MS = 8000;           // 8s
-const LOGO_PATH = './assets/logo.png';     // caminho do logo
+const LOGO_PATH = './assets/IB.png';       // caminho do logo (ajustado ao seu repo)
 
 /* =========================
    1) INDEXEDDB (Dexie)
    ========================= */
 const db = new Dexie('imobrotas_db');
 db.version(1).stores({
-  // Armazenamos APENAS fotos aqui (blobs) — metadados pequenos ficam no localStorage (já existente)
   fotos: 'id, itemId, createdAt'
 });
 
 // Salva Blob no IndexedDB e retorna o id gerado.
 async function savePhotoBlob(itemId, blob, mime = 'image/jpeg') {
-  const id = (crypto && crypto.randomUUID) ? crypto.randomUUID() : ('f' + Date.now() + Math.random().toString(16).slice(2));
+  const id = (crypto && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : ('f' + Date.now() + Math.random().toString(16).slice(2));
   await db.fotos.put({ id, itemId, mime, size: blob.size, createdAt: Date.now(), blob });
   return id;
 }
@@ -71,9 +71,8 @@ function canvasToBlob(canvas, quality) {
 
 // Aplica transformações de orientação EXIF no contexto do canvas
 function applyExifTransform(ctx, orientation, width, height) {
-  // Referência prática — cobre os 8 casos mais comuns
   switch (orientation) {
-    case 2: // horizontal flip
+    case 2: // flip horizontal
       ctx.translate(width, 0);
       ctx.scale(-1, 1);
       break;
@@ -81,30 +80,29 @@ function applyExifTransform(ctx, orientation, width, height) {
       ctx.translate(width, height);
       ctx.rotate(Math.PI);
       break;
-    case 4: // vertical flip
+    case 4: // flip vertical
       ctx.translate(0, height);
       ctx.scale(1, -1);
       break;
-    case 5: // transpose (flip + rotate 90° CW)
+    case 5: // transpose
       ctx.rotate(0.5 * Math.PI);
       ctx.scale(1, -1);
       break;
-    case 6: // rotate 90° CW
+    case 6: // 90° CW
       ctx.rotate(0.5 * Math.PI);
       ctx.translate(0, -height);
       break;
-    case 7: // transverse (flip + rotate 270°)
+    case 7: // transverse
       ctx.rotate(0.5 * Math.PI);
       ctx.translate(width, -height);
       ctx.scale(-1, 1);
       break;
-    case 8: // rotate 270° CCW
+    case 8: // 270° CCW
       ctx.rotate(-0.5 * Math.PI);
       ctx.translate(-width, 0);
       break;
     case 1:
     default:
-      // Sem transformação
       break;
   }
 }
@@ -125,7 +123,6 @@ async function processarImagem(file, {
   timeoutMs = PROCESS_TIMEOUT_MS
 } = {}) {
 
-  // Timeout de segurança
   const withTimeout = (p) => Promise.race([
     p,
     new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), timeoutMs))
@@ -139,28 +136,23 @@ async function processarImagem(file, {
     let sw = img.naturalWidth || img.width;
     let sh = img.naturalHeight || img.height;
 
-    // Escala inicial para caber no maxSide
+    // Escala inicial
     const scale = Math.min(1, maxSide / Math.max(sw, sh));
     let tw = Math.round(sw * scale);
     let th = Math.round(sh * scale);
 
-    // Canvas alvo (considera rotações 90º que trocam largura/altura)
-    const rotate90 = (orientation >= 5 && orientation <= 8);
-    let cw = rotate90 ? th : tw;
-    let ch = rotate90 ? tw : th;
-
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
 
-    // Função para (re)desenhar conforme orientação e tamanho atuais
     async function redrawAndExport(quality) {
-      const rotate90Now = (orientation >= 5 && orientation <= 8);
-      canvas.width = rotate90Now ? th : tw;
-      canvas.height = rotate90Now ? tw : th;
+      const rotate90 = (orientation >= 5 && orientation <= 8);
+      canvas.width = rotate90 ? th : tw;
+      canvas.height = rotate90 ? tw : th;
+
       ctx.save();
       applyExifTransform(ctx, orientation, canvas.width, canvas.height);
 
-      // Casos 5 e 7 precisam de draw compensado no eixo Y
+      // Casos 5 e 7 precisam de draw compensado no eixo
       if (orientation === 5) {
         ctx.drawImage(img, 0, -th, tw, th);
       } else if (orientation === 7) {
@@ -168,8 +160,8 @@ async function processarImagem(file, {
       } else {
         ctx.drawImage(img, 0, 0, tw, th);
       }
-      ctx.restore();
 
+      ctx.restore();
       const blob = await canvasToBlob(canvas, quality);
       return blob;
     }
@@ -177,15 +169,14 @@ async function processarImagem(file, {
     let quality = startQuality;
     let blob = await redrawAndExport(quality);
 
-    // Se ainda passou do limite, reduz qualidade até o mínimo
+    // Reduz qualidade até o mínimo
     while (blob.size > maxBytes && quality > minQuality) {
       quality = Math.max(minQuality, +(quality - 0.05).toFixed(2));
       blob = await redrawAndExport(quality);
     }
 
-    // Se ainda está grande, reduzir dimensões progressivamente
+    // Se ainda grande, reduzir dimensões
     while (blob.size > maxBytes && (tw > 1280 || th > 1280)) {
-      // Reduz 10% cada ciclo
       tw = Math.round(tw * 0.9);
       th = Math.round(th * 0.9);
       blob = await redrawAndExport(quality);
@@ -196,7 +187,6 @@ async function processarImagem(file, {
     }
 
     if (blob.size > maxBytes) {
-      // Ainda grande -> falha para acionar fallback: pular
       throw new Error('imagem_maior_que_limite');
     }
 
@@ -207,7 +197,6 @@ async function processarImagem(file, {
 /* =========================
    3) COMPONENTE: GRID DE FOTOS
    ========================= */
-// Componente para renderizar fotos (tanto Base64 legado quanto IDs do IndexedDB)
 function FotoGrid({ item, onRemoveBase64, onRemoveId }) {
   const [urls, setUrls] = useState([]); // { id?, url, origem: 'idb'|'base64' }
   const urlsRef = useRef([]);
@@ -222,14 +211,14 @@ function FotoGrid({ item, onRemoveBase64, onRemoveId }) {
 
       const list = [];
 
-      // 1) Fotos legado em Base64, se existirem
+      // 1) Fotos legado (Base64)
       if (Array.isArray(item.fotos) && item.fotos.length > 0) {
         item.fotos.forEach((dataUrl, idx) => {
           list.push({ key: `b64-${idx}`, url: dataUrl, origem: 'base64' });
         });
       }
 
-      // 2) Fotos novas por IDs do IndexedDB
+      // 2) Fotos novas por IDs no IndexedDB
       if (Array.isArray(item.fotoIds) && item.fotoIds.length > 0) {
         for (const id of item.fotoIds) {
           const blob = await getPhotoBlob(id);
@@ -290,7 +279,7 @@ function VistoriaApp() {
   const [salvando, setSalvando] = useState(false);
   const [gerandoPDF, setGerandoPDF] = useState(false);
 
-  // Carregar vistorias ao iniciar (mantemos localStorage para metadados)
+  // Carregar vistorias ao iniciar (metadados em localStorage)
   useEffect(() => {
     try {
       const saved = localStorage.getItem('vistorias_imoveis');
@@ -349,7 +338,8 @@ function VistoriaApp() {
     setTela('nova');
   };
 
-  const salvarVistoria = () => {
+  // Salva e já gera o PDF automaticamente
+  const salvarVistoria = async () => {
     if (!vistoriaAtual.endereco.trim()) {
       alert('Por favor, preencha o endereço do imóvel');
       return;
@@ -363,12 +353,20 @@ function VistoriaApp() {
 
       setVistorias(novasVistorias);
       localStorage.removeItem('vistoria_rascunho');
-      setTimeout(() => {
-        setSalvando(false);
-        setTela('lista');
-        setVistoriaAtual(null);
-        alert('Vistoria salva com sucesso!');
-      }, 300);
+
+      // Dá um tempo curto para o estado consolidar
+      await new Promise(r => setTimeout(r, 200));
+
+      setSalvando(false);
+      alert('Vistoria salva com sucesso!');
+
+      const vistoriaFinal = novasVistorias.find(v => v.id === vistoriaAtual.id);
+      if (vistoriaFinal) {
+        await gerarRelatorioPDF(vistoriaFinal); // baixa o PDF automaticamente
+      }
+
+      setTela('lista');
+      setVistoriaAtual(null);
     } catch (e) {
       setSalvando(false);
       alert('Erro ao salvar vistoria: ' + e.message);
@@ -410,72 +408,63 @@ function VistoriaApp() {
     });
   };
 
-  // Fluxo NOVO: adicionar fotos (uma ou mais)
-  
-const adicionarFotos = async (itemId, fileList) => {
-  if (!fileList || fileList.length === 0) return;
+  // Adicionar fotos (uma ou mais)
+  const adicionarFotos = async (itemId, fileList) => {
+    if (!fileList || fileList.length === 0) return;
 
-  for (const file of Array.from(fileList)) {
-    // Aceitar apenas imagens que o browser consegue decodificar via <img> / canvas
-    const mime = (file.type || '').toLowerCase();
-    if (!mime.startsWith('image/')) continue;
+    for (const file of Array.from(fileList)) {
+      const mime = (file.type || '').toLowerCase();
+      if (!mime.startsWith('image/')) continue;
 
-    // HEIC/HEIF costumam falhar fora do Safari; por segurança, vamos pular
-    if (mime.includes('heic') || mime.includes('heif')) {
-      console.warn('Imagem HEIC/HEIF detectada — pulando para evitar falha de processamento.');
-      continue; // fallback: pular (mantém app estável)
+      // HEIC/HEIF: pular para evitar falhas fora do Safari
+      if (mime.includes('heic') || mime.includes('heif')) {
+        console.warn('Imagem HEIC/HEIF detectada — pulando para evitar falha de processamento.');
+        continue;
+      }
+
+      try {
+        const blob = await processarImagem(file);        // EXIF + compressão ≤ 2,5MB
+        const fotoId = await savePhotoBlob(itemId, blob);
+        setVistoriaAtual(prev => ({
+          ...prev,
+          itens: prev.itens.map(it =>
+            it.id === itemId ? { ...it, fotoIds: [...(it.fotoIds || []), fotoId] } : it
+          )
+        }));
+      } catch (err) {
+        console.warn('Falha ao processar/comprimir imagem; pulando.', err);
+      }
     }
+  };
 
-    try {
-      const blob = await processarImagem(file);        // EXIF + compressão ≤ 2,5MB
-      const fotoId = await savePhotoBlob(itemId, blob);
-      setVistoriaAtual(prev => ({
-        ...prev,
-        itens: prev.itens.map(it =>
-          it.id === itemId ? { ...it, fotoIds: [...(it.fotoIds || []), fotoId] } : it
-        )
-      }));
-    } catch (err) {
-      // Falha na compressão ou canvas → pular automaticamente (requisito seu)
-      console.warn('Falha ao processar/comprimir imagem; pulando.', err);
-    }
-  }
-};
-
-
-  // Botão "Câmera": um arquivo; Botão "Galeria/Pasta": múltiplos/dir
+  // Abre a CÂMERA: um arquivo, sem múltiplo
   const abrirCamera = (onFiles) => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
-    input.capture = 'environment';
-    input.multiple = false;
+    input.capture = 'environment'; // traseira
+    input.multiple = false;        // importante p/ câmera
     input.onchange = (e) => {
-    const fl = e.target.files;
-    if (!fl || fl.length === 0) return;
-    // Passa como array para fluxo único de processamento
-    onFiles(Array.from(fl));
+      const fl = e.target.files;
+      if (!fl || fl.length === 0) return;
+      onFiles(Array.from(fl));
+    };
+    input.click();
   };
-  input.click();
 
-
- 
-// Abre a GALERIA: seleção múltipla, sem suporte a pasta
-const abrirGaleria = (onFiles) => {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = 'image/*';
-  input.multiple = true;           // permite várias fotos
-  // NÃO usar webkitdirectory/directory aqui — isso força o seletor de pastas
-  input.onchange = (e) => {
-    const files = Array.from(e.target.files || []).filter(f => (f.type || '').startsWith('image/'));
-    onFiles(files);
+  // Abre a GALERIA: seleção múltipla, sem seletor de pasta
+  const abrirGaleria = (onFiles) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.multiple = true; // várias fotos
+    input.onchange = (e) => {
+      const files = Array.from(e.target.files || []).filter(f => (f.type || '').startsWith('image/'));
+      onFiles(files);
+    };
+    input.click();
   };
-  input.click();
-};
 
-
-  // Remoções
   const removerFotoBase64 = (itemId, fotoIndex) => {
     if (confirm('Deseja remover esta foto?')) {
       setVistoriaAtual({
@@ -511,8 +500,7 @@ const abrirGaleria = (onFiles) => {
   const excluirVistoria = (id) => {
     if (confirm('Deseja realmente excluir esta vistoria?')) {
       setVistorias(vistorias.filter(v => v.id !== id));
-      // Observação: as fotos no IndexedDB ficarão órfãs se não forem removidas.
-      // Poderíamos implementar uma limpeza automática por vistoria depois.
+      // (Fotos no IndexedDB podem ficar órfãs; podemos limpar em uma melhoria futura)
     }
   };
 
@@ -525,7 +513,7 @@ const abrirGaleria = (onFiles) => {
     container.style.position = 'fixed';
     container.style.left = '-10000px';
     container.style.top = '0';
-    container.style.width = '794px'; // ~A4 width em px / referência visual
+    container.style.width = '794px'; // ~A4 width em px (referência)
     container.className = 'pdf-container rel-container';
 
     // Cabeçalho + logo
@@ -544,7 +532,7 @@ const abrirGaleria = (onFiles) => {
     `;
     container.appendChild(header);
 
-    // Monta itens (com fotos de duas fontes: Base64 legado e IndexedDB)
+    // Monta itens (Base64 legado + IndexedDB)
     for (let idx = 0; idx < vistoria.itens.length; idx++) {
       const item = vistoria.itens[idx];
       const itemDiv = document.createElement('div');
@@ -563,7 +551,6 @@ const abrirGaleria = (onFiles) => {
         ${descricaoHTML}
       `;
 
-      // Bloco de fotos
       const fotosWrapper = document.createElement('div');
       const fotos = (item.fotos || []);     // legado (Base64)
       const fotoIds = (item.fotoIds || []); // atual (IndexedDB)
@@ -607,8 +594,7 @@ const abrirGaleria = (onFiles) => {
           }
         }
 
-        // Guardar para revogar após gerar PDF
-        itemDiv._tempUrls = tempUrls;
+        itemDiv._tempUrls = tempUrls; // para revogar depois
         itemDiv.appendChild(fotosWrapper);
       } else {
         const vazio = document.createElement('div');
@@ -642,12 +628,12 @@ const abrirGaleria = (onFiles) => {
 
     try {
       await html2pdf().from(container).set(opt).save();
-      alert('Relatório em PDF baixado! Verifique seus downloads.');
+      // mensagem opcional: alert('Relatório em PDF baixado! Verifique seus downloads.');
     } catch (e) {
       console.error('Erro ao gerar PDF:', e);
       alert('Erro ao gerar PDF. Tente novamente.');
     } finally {
-      // Limpeza: revoga object URLs temporárias e remove o container
+      // Limpeza de object URLs temporárias e do container
       try {
         container.querySelectorAll('.rel-item').forEach(div => {
           const tempUrls = div._tempUrls || [];
@@ -885,8 +871,7 @@ const abrirGaleria = (onFiles) => {
 
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Fotos
-                        {' '}
+                        Fotos{' '}
                         <span className="text-gray-400">
                           (total: {(item.fotoIds?.length || 0) + (item.fotos?.length || 0)})
                         </span>
@@ -894,19 +879,19 @@ const abrirGaleria = (onFiles) => {
 
                       <div className="grid grid-cols-2 gap-2">
                         <button
-                           onClick={() => abrirCamera((files) => adicionarFotos(item.id, files))}
-                           className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg w-full"
->
-  📷 Câmera
-</button>
+                          onClick={() => abrirCamera((files) => adicionarFotos(item.id, files))}
+                          className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg w-full"
+                        >
+                          📷 Câmera
+                        </button>
 
-<button
-  onClick={() => abrirGaleria((files) => adicionarFotos(item.id, files))}
-  className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg w-full"
->
-  🖼️ Galeria
-</button>
-
+                        <button
+                          onClick={() => abrirGaleria((files) => adicionarFotos(item.id, files))}
+                          className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg w-full"
+                        >
+                          🖼️ Galeria
+                        </button>
+                      </div>
 
                       <FotoGrid
                         item={item}
@@ -968,14 +953,14 @@ const abrirGaleria = (onFiles) => {
 /* =========================
    5) HELPER FUNCTIONS
    ========================= */
-// Escapa HTML simples para evitar problemas em texto livre
+// Escapa HTML simples
 function escapeHtml(str = '') {
   return String(str)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
 
 function normalizeFileName(s = '') {
@@ -986,4 +971,3 @@ function normalizeFileName(s = '') {
     .replace(/(^-|-$)/g, '')
     .toLowerCase();
 }
-
