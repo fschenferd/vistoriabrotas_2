@@ -12,7 +12,7 @@ const MAX_SIDE_PX = 1920;                  // lado maior
 const JPEG_START_QUALITY = 0.85;
 const JPEG_MIN_QUALITY = 0.60;
 const PROCESS_TIMEOUT_MS = 8000;           // 8s
-const LOGO_PATH = './assets/IB.png';       // caminho do logo (ajustado ao seu repo)
+const LOGO_PATH = './assets/IB.png';       // caminho do logo
 
 /* =========================
    1) INDEXEDDB (Dexie)
@@ -22,7 +22,6 @@ db.version(1).stores({
   fotos: 'id, itemId, createdAt'
 });
 
-// Salva Blob no IndexedDB e retorna o id gerado.
 async function savePhotoBlob(itemId, blob, mime = 'image/jpeg') {
   const id = (crypto && crypto.randomUUID)
     ? crypto.randomUUID()
@@ -30,12 +29,10 @@ async function savePhotoBlob(itemId, blob, mime = 'image/jpeg') {
   await db.fotos.put({ id, itemId, mime, size: blob.size, createdAt: Date.now(), blob });
   return id;
 }
-
 async function getPhotoBlob(id) {
   const rec = await db.fotos.get(id);
   return rec ? rec.blob : null;
 }
-
 async function deletePhotoBlob(id) {
   await db.fotos.delete(id);
 }
@@ -72,38 +69,15 @@ function canvasToBlob(canvas, quality) {
 // Aplica transformações de orientação EXIF no contexto do canvas
 function applyExifTransform(ctx, orientation, width, height) {
   switch (orientation) {
-    case 2: // flip horizontal
-      ctx.translate(width, 0);
-      ctx.scale(-1, 1);
-      break;
-    case 3: // 180°
-      ctx.translate(width, height);
-      ctx.rotate(Math.PI);
-      break;
-    case 4: // flip vertical
-      ctx.translate(0, height);
-      ctx.scale(1, -1);
-      break;
-    case 5: // transpose
-      ctx.rotate(0.5 * Math.PI);
-      ctx.scale(1, -1);
-      break;
-    case 6: // 90° CW
-      ctx.rotate(0.5 * Math.PI);
-      ctx.translate(0, -height);
-      break;
-    case 7: // transverse
-      ctx.rotate(0.5 * Math.PI);
-      ctx.translate(width, -height);
-      ctx.scale(-1, 1);
-      break;
-    case 8: // 270° CCW
-      ctx.rotate(-0.5 * Math.PI);
-      ctx.translate(-width, 0);
-      break;
+    case 2: ctx.translate(width, 0); ctx.scale(-1, 1); break;             // flip H
+    case 3: ctx.translate(width, height); ctx.rotate(Math.PI); break;     // 180°
+    case 4: ctx.translate(0, height); ctx.scale(1, -1); break;            // flip V
+    case 5: ctx.rotate(0.5 * Math.PI); ctx.scale(1, -1); break;           // transpose
+    case 6: ctx.rotate(0.5 * Math.PI); ctx.translate(0, -height); break;  // 90° CW
+    case 7: ctx.rotate(0.5 * Math.PI); ctx.translate(width, -height); ctx.scale(-1, 1); break; // transverse
+    case 8: ctx.rotate(-0.5 * Math.PI); ctx.translate(-width, 0); break;  // 270° CCW
     case 1:
-    default:
-      break;
+    default: break;
   }
 }
 
@@ -129,10 +103,12 @@ async function processarImagem(file, {
   ]);
 
   return await withTimeout((async () => {
+    // Em iOS/Safari, fotos podem ser HEIC/HEIF. Safari consegue decodificar em <img>,
+    // e nós exportamos como JPEG no canvas — então NÃO vamos pular HEIC.
     const orientation = await exifr.orientation(file).catch(() => 1) || 1;
     const img = await fileToImage(file);
 
-    // Tamanho original
+    // Dimensões originais
     let sw = img.naturalWidth || img.width;
     let sh = img.naturalHeight || img.height;
 
@@ -152,7 +128,6 @@ async function processarImagem(file, {
       ctx.save();
       applyExifTransform(ctx, orientation, canvas.width, canvas.height);
 
-      // Casos 5 e 7 precisam de draw compensado no eixo
       if (orientation === 5) {
         ctx.drawImage(img, 0, -th, tw, th);
       } else if (orientation === 7) {
@@ -205,20 +180,19 @@ function FotoGrid({ item, onRemoveBase64, onRemoveId }) {
     let isMounted = true;
 
     async function load() {
-      // Revoga URLs anteriores
       urlsRef.current.forEach(u => { if (u && u.startsWith('blob:')) URL.revokeObjectURL(u); });
       urlsRef.current = [];
 
       const list = [];
 
-      // 1) Fotos legado (Base64)
+      // 1) Base64 (legado)
       if (Array.isArray(item.fotos) && item.fotos.length > 0) {
         item.fotos.forEach((dataUrl, idx) => {
           list.push({ key: `b64-${idx}`, url: dataUrl, origem: 'base64' });
         });
       }
 
-      // 2) Fotos novas por IDs no IndexedDB
+      // 2) IndexedDB (fotoIds)
       if (Array.isArray(item.fotoIds) && item.fotoIds.length > 0) {
         for (const id of item.fotoIds) {
           const blob = await getPhotoBlob(id);
@@ -303,7 +277,7 @@ function VistoriaApp() {
     }
   }, [vistorias]);
 
-  // Auto-salvar rascunho da vistoria atual
+  // Auto-salvar rascunho
   useEffect(() => {
     if (vistoriaAtual && tela === 'nova') {
       try {
@@ -338,7 +312,7 @@ function VistoriaApp() {
     setTela('nova');
   };
 
-  // Salva e já gera o PDF automaticamente
+  // Salvar e gerar o PDF automaticamente
   const salvarVistoria = async () => {
     if (!vistoriaAtual.endereco.trim()) {
       alert('Por favor, preencha o endereço do imóvel');
@@ -354,15 +328,14 @@ function VistoriaApp() {
       setVistorias(novasVistorias);
       localStorage.removeItem('vistoria_rascunho');
 
-      // Dá um tempo curto para o estado consolidar
-      await new Promise(r => setTimeout(r, 200));
+      await new Promise(r => setTimeout(r, 200)); // deixa estado consolidar
 
       setSalvando(false);
       alert('Vistoria salva com sucesso!');
 
       const vistoriaFinal = novasVistorias.find(v => v.id === vistoriaAtual.id);
       if (vistoriaFinal) {
-        await gerarRelatorioPDF(vistoriaFinal); // baixa o PDF automaticamente
+        await gerarRelatorioPDF(vistoriaFinal);
       }
 
       setTela('lista');
@@ -378,14 +351,7 @@ function VistoriaApp() {
       ...vistoriaAtual,
       itens: [
         ...vistoriaAtual.itens,
-        {
-          id: Date.now(),
-          comodo: '',
-          descricao: '',
-          estado: 'bom',
-          fotoIds: [], // novo
-          // fotos: [] // legado (não usamos em novos itens)
-        }
+        { id: Date.now(), comodo: '', descricao: '', estado: 'bom', fotoIds: [] }
       ]
     });
   };
@@ -408,22 +374,18 @@ function VistoriaApp() {
     });
   };
 
-  // Adicionar fotos (uma ou mais)
+  // Adicionar fotos (uma ou mais) — agora ACEITA HEIC/HEIF no iOS
   const adicionarFotos = async (itemId, fileList) => {
     if (!fileList || fileList.length === 0) return;
 
     for (const file of Array.from(fileList)) {
+      // Em alguns iPhones o tipo pode vir vazio; checamos também pelo nome
       const mime = (file.type || '').toLowerCase();
-      if (!mime.startsWith('image/')) continue;
-
-      // HEIC/HEIF: pular para evitar falhas fora do Safari
-      if (mime.includes('heic') || mime.includes('heif')) {
-        console.warn('Imagem HEIC/HEIF detectada — pulando para evitar falha de processamento.');
-        continue;
-      }
+      const isImage = mime.startsWith('image/') || /\.(heic|heif|jpg|jpeg|png|webp)$/i.test(file.name || '');
+      if (!isImage) continue;
 
       try {
-        const blob = await processarImagem(file);        // EXIF + compressão ≤ 2,5MB
+        const blob = await processarImagem(file);   // converte para JPEG <= 2,5MB
         const fotoId = await savePhotoBlob(itemId, blob);
         setVistoriaAtual(prev => ({
           ...prev,
@@ -437,13 +399,13 @@ function VistoriaApp() {
     }
   };
 
-  // Abre a CÂMERA: um arquivo, sem múltiplo
+  // CÂMERA (1 arquivo, sem múltiplo)
   const abrirCamera = (onFiles) => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
-    input.capture = 'environment'; // traseira
-    input.multiple = false;        // importante p/ câmera
+    input.capture = 'environment';
+    input.multiple = false;
     input.onchange = (e) => {
       const fl = e.target.files;
       if (!fl || fl.length === 0) return;
@@ -452,14 +414,17 @@ function VistoriaApp() {
     input.click();
   };
 
-  // Abre a GALERIA: seleção múltipla, sem seletor de pasta
+  // GALERIA (múltipla, SEM seletor de pasta)
   const abrirGaleria = (onFiles) => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
-    input.multiple = true; // várias fotos
+    input.multiple = true;
     input.onchange = (e) => {
-      const files = Array.from(e.target.files || []).filter(f => (f.type || '').startsWith('image/'));
+      const files = Array.from(e.target.files || []).filter(f => {
+        const mime = (f.type || '').toLowerCase();
+        return mime.startsWith('image/') || /\.(heic|heif|jpg|jpeg|png|webp)$/i.test(f.name || '');
+      });
       onFiles(files);
     };
     input.click();
@@ -500,23 +465,22 @@ function VistoriaApp() {
   const excluirVistoria = (id) => {
     if (confirm('Deseja realmente excluir esta vistoria?')) {
       setVistorias(vistorias.filter(v => v.id !== id));
-      // (Fotos no IndexedDB podem ficar órfãs; podemos limpar em uma melhoria futura)
     }
   };
 
-  // Geração de PDF (A4, retrato), com logo no canto superior direito
+  // PDF (A4, retrato)
   const gerarRelatorioPDF = async (vistoria) => {
     setGerandoPDF(true);
 
-    // Cria container invisível no DOM
+    // Container invisível, mas mantendo "display:block" (Safari renderiza melhor)
     const container = document.createElement('div');
-    container.style.position = 'fixed';
-    container.style.left = '-10000px';
+    container.style.position = 'absolute';
+    container.style.left = '-9999px';
     container.style.top = '0';
-    container.style.width = '794px'; // ~A4 width em px (referência)
+    container.style.width = '794px'; // ~A4
     container.className = 'pdf-container rel-container';
 
-    // Cabeçalho + logo
+    // Cabeçalho + logo (corrigido: <img .../>)
     const header = document.createElement('div');
     header.innerHTML = `
       <img src="${LOGO_PATH}" class="pdf-logo" alt="Logo" />
@@ -532,15 +496,12 @@ function VistoriaApp() {
     `;
     container.appendChild(header);
 
-    // Monta itens (Base64 legado + IndexedDB)
     for (let idx = 0; idx < vistoria.itens.length; idx++) {
       const item = vistoria.itens[idx];
       const itemDiv = document.createElement('div');
       itemDiv.className = 'rel-item';
 
-      const titulo =
-        `Item ${idx + 1}: ${item.comodo && item.comodo.trim() ? escapeHtml(item.comodo) : 'Sem identificação'}`;
-
+      const titulo = `Item ${idx + 1}: ${item.comodo && item.comodo.trim() ? escapeHtml(item.comodo) : 'Sem identificação'}`;
       const descricaoHTML = item.descricao && item.descricao.trim()
         ? `<div class="mt-2"><strong>Descrição:</strong><div>${escapeHtml(item.descricao)}</div></div>`
         : '';
@@ -552,8 +513,8 @@ function VistoriaApp() {
       `;
 
       const fotosWrapper = document.createElement('div');
-      const fotos = (item.fotos || []);     // legado (Base64)
-      const fotoIds = (item.fotoIds || []); // atual (IndexedDB)
+      const fotos = (item.fotos || []);
+      const fotoIds = (item.fotoIds || []);
       const total = fotos.length + fotoIds.length;
 
       if (total > 0) {
@@ -565,7 +526,7 @@ function VistoriaApp() {
         grid.className = 'rel-fotos';
         fotosWrapper.appendChild(grid);
 
-        // 1) Base64 (legado)
+        // Base64 (legado) — corrigido: usar <img …>
         fotos.forEach((dataUrl, i) => {
           const box = document.createElement('div');
           box.className = 'rel-foto-box';
@@ -576,7 +537,7 @@ function VistoriaApp() {
           grid.appendChild(box);
         });
 
-        // 2) IndexedDB (ids -> blobs -> object URLs)
+        // IndexedDB (ids -> blobs -> object URLs) — corrigido: usar <img …>
         const tempUrls = [];
         for (let j = 0; j < fotoIds.length; j++) {
           const id = fotoIds[j];
@@ -584,6 +545,7 @@ function VistoriaApp() {
           if (blob) {
             const url = URL.createObjectURL(blob);
             tempUrls.push(url);
+
             const box = document.createElement('div');
             box.className = 'rel-foto-box';
             box.innerHTML = `
@@ -594,7 +556,7 @@ function VistoriaApp() {
           }
         }
 
-        itemDiv._tempUrls = tempUrls; // para revogar depois
+        itemDiv._tempUrls = tempUrls;
         itemDiv.appendChild(fotosWrapper);
       } else {
         const vazio = document.createElement('div');
@@ -606,20 +568,17 @@ function VistoriaApp() {
       container.appendChild(itemDiv);
     }
 
-    // Rodapé
     const footer = document.createElement('div');
     footer.className = 'rel-footer';
     footer.innerHTML =
       `<p>Relatório gerado em ${new Date().toLocaleDateString('pt-BR')} às ${new Date().toLocaleTimeString('pt-BR')}</p>`;
     container.appendChild(footer);
 
-    // Anexa no body (fora da tela)
     document.body.appendChild(container);
 
-    // Opções do PDF
     const filename = `vistoria-${normalizeFileName(vistoria.endereco)}-${vistoria.data}.pdf`;
     const opt = {
-      margin:       10, // mm
+      margin:       10,
       filename,
       image:        { type: 'jpeg', quality: 0.95 },
       html2canvas:  { scale: 2, useCORS: true },
@@ -628,12 +587,10 @@ function VistoriaApp() {
 
     try {
       await html2pdf().from(container).set(opt).save();
-      // mensagem opcional: alert('Relatório em PDF baixado! Verifique seus downloads.');
     } catch (e) {
       console.error('Erro ao gerar PDF:', e);
       alert('Erro ao gerar PDF. Tente novamente.');
     } finally {
-      // Limpeza de object URLs temporárias e do container
       try {
         container.querySelectorAll('.rel-item').forEach(div => {
           const tempUrls = div._tempUrls || [];
@@ -884,7 +841,6 @@ function VistoriaApp() {
                         >
                           📷 Câmera
                         </button>
-
                         <button
                           onClick={() => abrirGaleria((files) => adicionarFotos(item.id, files))}
                           className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg w-full"
@@ -953,7 +909,6 @@ function VistoriaApp() {
 /* =========================
    5) HELPER FUNCTIONS
    ========================= */
-// Escapa HTML simples
 function escapeHtml(str = '') {
   return String(str)
     .replace(/&/g, '&amp;')
@@ -962,10 +917,9 @@ function escapeHtml(str = '') {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
 }
-
 function normalizeFileName(s = '') {
   return s
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove acentos
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-zA-Z0-9]/g, '-')
     .replace(/-+/g, '-')
     .replace(/(^-|-$)/g, '')
