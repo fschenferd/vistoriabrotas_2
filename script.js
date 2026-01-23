@@ -1,37 +1,17 @@
+// App de Vistoria - versão sem build, usando React via CDN
 
-// App de Vistoria — versão sem build (React via CDN)
-// Fluxo simples e compatível com iPhone/Safari:
-// - Fotos em Base64 (localStorage) com compressão <= 2,5MB (senão, pula)
-// - EXIF (exifr) para corrigir orientação
-// - PDF (html2pdf) A4 retrato, logo no topo direito
-
-const { useState, useEffect } = React;
-
-/* =========================
-   0) CONFIGURAÇÕES
-   ========================= */
+// === Limite e compressão das imagens ===
 const MAX_IMAGE_BYTES = 2.5 * 1024 * 1024; // 2,5 MB
-const MAX_SIDE_PX = 1920;                  // lado maior
 const JPEG_START_QUALITY = 0.85;
 const JPEG_MIN_QUALITY = 0.60;
-const PROCESS_TIMEOUT_MS = 8000;           // 8s
-const LOGO_PATH = './assets/IB.png';       // seu logo
-const AUTO_PDF_ON_SAVE = true;             // baixa PDF automaticamente ao salvar
+const MAX_SIDE_PX = 1920;     // lado maior inicial (ajuda a reduzir sem perder muito)
 
-/* =========================
-   1) UTILITÁRIOS DE IMAGEM
-   ========================= */
-function fileToImage(file) {
+function fileToImageFromDataURL(dataURL) {
   return new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onerror = () => reject(new Error('Falha ao ler arquivo.'));
-    fr.onload = () => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error('Imagem inválida.'));
-      img.src = fr.result;
-    };
-    fr.readAsDataURL(file);
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Imagem inválida.'));
+    img.src = dataURL;
   });
 }
 
@@ -54,186 +34,177 @@ function blobToDataURL(blob) {
   });
 }
 
-function applyExifTransform(ctx, orientation, width, height) {
-  switch (orientation) {
-    case 2: ctx.translate(width, 0); ctx.scale(-1, 1); break;             // flip H
-    case 3: ctx.translate(width, height); ctx.rotate(Math.PI); break;      // 180°
-    case 4: ctx.translate(0, height); ctx.scale(1, -1); break;             // flip V
-    case 5: ctx.rotate(0.5 * Math.PI); ctx.scale(1, -1); break;            // transpose
-    case 6: ctx.rotate(0.5 * Math.PI); ctx.translate(0, -height); break;   // 90° CW
-    case 7: ctx.rotate(0.5 * Math.PI); ctx.translate(width, -height); ctx.scale(-1, 1); break;
-    case 8: ctx.rotate(-0.5 * Math.PI); ctx.translate(-width, 0); break;   // 270° CCW
-    case 1:
-    default: break;
-  }
-}
-
 /**
- * Processa imagem:
- * - Lê EXIF (orientation)
- * - Redimensiona (lado <= MAX_SIDE_PX)
- * - Comprime para JPEG até <= 2,5MB (ou dá erro -> vamos pular a foto)
- * - Retorna dataURL (Base64)
+ * Recebe um File muito grande e devolve um dataURL JPEG <= 2,5 MB.
+ * Estratégia:
+ *  - Reduz qualidade de 0.85 até 0.60
+ *  - Se ainda estiver grande, reduz dimensões (90% a cada passo) até ~1280px
+ *  - Se mesmo assim não atingir <= 2,5MB: lança erro (vamos "pular" a foto)
  */
-async function processarImagemComoDataURL(file, {
+async function compressFileToMaxDataURL(file, {
   maxBytes = MAX_IMAGE_BYTES,
-  maxSide = MAX_SIDE_PX,
   startQuality = JPEG_START_QUALITY,
   minQuality = JPEG_MIN_QUALITY,
-  timeoutMs = PROCESS_TIMEOUT_MS
+  maxSide = MAX_SIDE_PX
 } = {}) {
+  // 1) Ler o arquivo como DataURL (compatível com iPhone/Safari e com seu fluxo atual)
+  const base64 = await new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onerror = () => reject(new Error('Falha ao ler arquivo.'));
+    fr.onload = () => resolve(fr.result);
+    fr.readAsDataURL(file);
+  });
 
-  const withTimeout = (p) => Promise.race([
-    p,
-    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), timeoutMs))
-  ]);
+  // 2) Criar imagem e canvas
+  const img = await fileToImageFromDataURL(base64);
+  let srcW = img.naturalWidth || img.width;
+  let srcH = img.naturalHeight || img.height;
 
-  return await withTimeout((async () => {
-    const orientation = await exifr.orientation(file).catch(() => 1) || 1;
-    const img = await fileToImage(file);
+  // Começamos respeitando um lado máximo (ajuda muito em fotos 4k)
+  const scale0 = Math.min(1, maxSide / Math.max(srcW, srcH));
+  let tw = Math.round(srcW * scale0);
+  let th = Math.round(srcH * scale0);
 
-    let sw = img.naturalWidth || img.width;
-    let sh = img.naturalHeight || img.height;
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
 
-    const scale = Math.min(1, maxSide / Math.max(sw, sh));
-    let tw = Math.round(sw * scale);
-    let th = Math.round(sh * scale);
+  async function redrawAndExport(quality) {
+    canvas.width = tw;
+    canvas.height = th;
+    ctx.clearRect(0, 0, tw, th);
+    ctx.drawImage(img, 0, 0, tw, th);
+    const blob = await canvasToBlob(canvas, quality);
+    return blob;
+  }
 
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
+  // 3) Tenta qualidades decrescentes
+  let quality = startQuality;
+  let blob = await redrawAndExport(quality);
 
-    async function redrawAndExport(quality) {
-      const rotate90 = (orientation >= 5 && orientation <= 8);
-      canvas.width = rotate90 ? th : tw;
-      canvas.height = rotate90 ? tw : th;
-      ctx.save();
-      applyExifTransform(ctx, orientation, canvas.width, canvas.height);
+  while (blob.size > maxBytes && quality > minQuality) {
+    quality = Math.max(minQuality, +(quality - 0.05).toFixed(2));
+    blob = await redrawAndExport(quality);
+  }
 
-      if (orientation === 5) {
-        ctx.drawImage(img, 0, -th, tw, th);
-      } else if (orientation === 7) {
-        ctx.drawImage(img, -tw, 0, tw, th);
-      } else {
-        ctx.drawImage(img, 0, 0, tw, th);
-      }
-      ctx.restore();
-      const blob = await canvasToBlob(canvas, quality);
-      return blob;
-    }
+  // 4) Se ainda estiver grande, reduz dimensões progressivamente
+  while (blob.size > maxBytes && (tw > 1280 || th > 1280)) {
+    tw = Math.round(tw * 0.9);
+    th = Math.round(th * 0.9);
+    blob = await redrawAndExport(quality);
 
-    let quality = startQuality;
-    let blob = await redrawAndExport(quality);
-
-    while (blob.size > maxBytes && quality > minQuality) {
+    if (quality > minQuality && blob.size > maxBytes) {
       quality = Math.max(minQuality, +(quality - 0.05).toFixed(2));
       blob = await redrawAndExport(quality);
     }
+  }
 
-    while (blob.size > maxBytes && (tw > 1280 || th > 1280)) {
-      tw = Math.round(tw * 0.9);
-      th = Math.round(th * 0.9);
-      blob = await redrawAndExport(quality);
-      if (quality > minQuality && blob.size > maxBytes) {
-        quality = Math.max(minQuality, +(quality - 0.05).toFixed(2));
-        blob = await redrawAndExport(quality);
-      }
-    }
+  if (blob.size > maxBytes) {
+    throw new Error('nao_conseguiu_comprimir_ate_2_5mb');
+  }
 
-    if (blob.size > maxBytes) throw new Error('imagem_maior_que_limite');
-
-    // Converte para Base64 (compatível com Safari e html2pdf/html2canvas)
-    const dataURL = await blobToDataURL(blob);
-    return dataURL;
-  })());
+  // 5) Converte o Blob final para dataURL (para manter seu fluxo atual)
+  return await blobToDataURL(blob);
 }
 
-/* =========================
-   2) APP
-   ========================= */
+
+const { useState, useEffect } = React;
+
 function VistoriaApp() {
   const [vistorias, setVistorias] = useState([]);
   const [vistoriaAtual, setVistoriaAtual] = useState(null);
   const [tela, setTela] = useState('lista');
   const [salvando, setSalvando] = useState(false);
-  const [gerandoPDF, setGerandoPDF] = useState(false);
 
-  // Carrega vistorias
+  // Carregar vistorias ao iniciar
   useEffect(() => {
     try {
       const saved = localStorage.getItem('vistorias_imoveis');
-      if (saved) setVistorias(JSON.parse(saved) || []);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        setVistorias(Array.isArray(parsed) ? parsed : []);
+      }
     } catch (e) {
       console.error('Erro ao carregar vistorias:', e);
+      setVistorias([]);
     }
   }, []);
 
-  // Persiste vistorias
+  // Salvar automaticamente quando vistorias mudam
   useEffect(() => {
     try {
       localStorage.setItem('vistorias_imoveis', JSON.stringify(vistorias));
     } catch (e) {
-      console.error('Erro ao salvar vistorias:', e);
-      alert('Erro ao salvar dados. Libere espaço no dispositivo.');
+      console.error('Erro ao salvar:', e);
+      alert('Erro ao salvar dados. Tente liberar espaço no dispositivo.');
     }
   }, [vistorias]);
 
-  // Rascunho
+  // Auto-salvar vistoria atual a cada mudança
   useEffect(() => {
     if (vistoriaAtual && tela === 'nova') {
       try {
         localStorage.setItem('vistoria_rascunho', JSON.stringify(vistoriaAtual));
-      } catch (e) {}
+      } catch (e) {
+        console.error('Erro ao salvar rascunho:', e);
+      }
     }
   }, [vistoriaAtual, tela]);
 
-  // Ações principais
   const novaVistoria = () => {
+    // Verificar se existe rascunho
     try {
-      const draft = localStorage.getItem('vistoria_rascunho');
-      if (draft && confirm('Existe um rascunho salvo. Deseja recuperá-lo?')) {
-        setVistoriaAtual(JSON.parse(draft));
-        setTela('nova');
-        return;
+      const rascunho = localStorage.getItem('vistoria_rascunho');
+      if (rascunho) {
+        if (confirm('Existe um rascunho salvo. Deseja recuperá-lo?')) {
+          setVistoriaAtual(JSON.parse(rascunho));
+          setTela('nova');
+          return;
+        }
       }
-    } catch {}
+    } catch (e) {
+      console.error('Erro ao recuperar rascunho:', e);
+    }
+
     setVistoriaAtual({
       id: Date.now(),
       data: new Date().toISOString().split('T')[0],
       endereco: '',
       tipo: 'entrada',
       responsavel: '',
-      itens: [] // { id, comodo, descricao, estado, fotos: [dataURL] }
+      itens: []
     });
     setTela('nova');
   };
 
-  const salvarVistoria = async () => {
+  const salvarVistoria = () => {
     if (!vistoriaAtual.endereco.trim()) {
       alert('Por favor, preencha o endereço do imóvel');
       return;
     }
+
     setSalvando(true);
+
     try {
-      const novas = [...vistorias];
-      const i = novas.findIndex(v => v.id === vistoriaAtual.id);
-      if (i >= 0) novas[i] = { ...vistoriaAtual };
-      else novas.push({ ...vistoriaAtual });
+      const novasVistorias = [...vistorias];
+      const index = novasVistorias.findIndex(v => v.id === vistoriaAtual.id);
 
-      setVistorias(novas);
-      localStorage.removeItem('vistoria_rascunho');
-
-      await new Promise(r => setTimeout(r, 150)); // estabilidade
-
-      setSalvando(false);
-      alert('Vistoria salva com sucesso!');
-
-      if (AUTO_PDF_ON_SAVE) {
-        const vFinal = novas.find(v => v.id === vistoriaAtual.id);
-        if (vFinal) await gerarRelatorioPDF(vFinal);
+      if (index >= 0) {
+        novasVistorias[index] = { ...vistoriaAtual };
+      } else {
+        novasVistorias.push({ ...vistoriaAtual });
       }
 
-      setTela('lista');
-      setVistoriaAtual(null);
+      setVistorias(novasVistorias);
+
+      // Limpar rascunho
+      localStorage.removeItem('vistoria_rascunho');
+
+      setTimeout(() => {
+        setSalvando(false);
+        setTela('lista');
+        setVistoriaAtual(null);
+        alert('Vistoria salva com sucesso!');
+      }, 300);
     } catch (e) {
       setSalvando(false);
       alert('Erro ao salvar vistoria: ' + e.message);
@@ -243,195 +214,266 @@ function VistoriaApp() {
   const adicionarItem = () => {
     setVistoriaAtual({
       ...vistoriaAtual,
-      itens: [
-        ...vistoriaAtual.itens,
-        { id: Date.now(), comodo: '', descricao: '', estado: 'bom', fotos: [] }
-      ]
+      itens: [...vistoriaAtual.itens, {
+        id: Date.now(),
+        comodo: '',
+        descricao: '',
+        estado: 'bom',
+        fotos: []
+      }]
     });
   };
 
   const removerItem = (itemId) => {
-    if (!confirm('Deseja remover este item?')) return;
-    setVistoriaAtual({
-      ...vistoriaAtual,
-      itens: vistoriaAtual.itens.filter(i => i.id !== itemId)
-    });
+    if (confirm('Deseja remover este item?')) {
+      setVistoriaAtual({
+        ...vistoriaAtual,
+        itens: vistoriaAtual.itens.filter(item => item.id !== itemId)
+      });
+    }
   };
 
   const atualizarItem = (itemId, campo, valor) => {
     setVistoriaAtual({
       ...vistoriaAtual,
-      itens: vistoriaAtual.itens.map(i => i.id === itemId ? { ...i, [campo]: valor } : i)
-    });
-  };
-
-  // Fotos
-  const adicionarFotos = async (itemId, files) => {
-    if (!files || files.length === 0) return;
-    for (const file of Array.from(files)) {
-      const mime = (file.type || '').toLowerCase();
-      if (!mime.startsWith('image/')) continue;
-      try {
-        const dataURL = await processarImagemComoDataURL(file); // <= 2,5MB
-        setVistoriaAtual(prev => ({
-          ...prev,
-          itens: prev.itens.map(it =>
-            it.id === itemId ? { ...it, fotos: [...(it.fotos || []), dataURL] } : it
-          )
-        }));
-      } catch (err) {
-        console.warn('Não foi possível processar esta imagem. Ela será ignorada.', err);
-        // Fallback desejado: pular
-      }
-    }
-  };
-
-  const abrirCamera = (onFiles) => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*';
-    input.capture = 'environment'; // câmera traseira
-    input.multiple = false;        // iOS gosta disso para a câmera
-    input.onchange = (e) => {
-      const fl = e.target.files;
-      if (!fl || fl.length === 0) return;
-      onFiles(fl);
-    };
-    input.click();
-  };
-
-  const abrirGaleria = (onFiles) => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*';
-    input.multiple = true;         // várias imagens
-    // Importante: NÃO usar webkitdirectory ou directory (isso abre seletor de pastas)
-    input.onchange = (e) => {
-      const files = e.target.files;
-      if (!files || files.length === 0) return;
-      onFiles(files);
-    };
-    input.click();
-  };
-
-  const removerFoto = (itemId, idxFoto) => {
-    if (!confirm('Deseja remover esta foto?')) return;
-    setVistoriaAtual({
-      ...vistoriaAtual,
-      itens: vistoriaAtual.itens.map(it =>
-        it.id === itemId
-          ? { ...it, fotos: (it.fotos || []).filter((_, i) => i !== idxFoto) }
-          : it
+      itens: vistoriaAtual.itens.map(item =>
+        item.id === itemId ? { ...item, [campo]: valor } : item
       )
     });
   };
 
-  const excluirVistoria = (id) => {
-    if (!confirm('Deseja realmente excluir esta vistoria?')) return;
-    setVistorias(vistorias.filter(v => v.id !== id));
-  };
+ 
+const adicionarFoto = async (itemId, arquivo) => {
+  if (!arquivo) return;
 
-  // PDF
-  const gerarRelatorioPDF = async (vistoria) => {
-    setGerandoPDF(true);
+  try {
+    // Se já está <= 2,5 MB, mantém o fluxo original (lê direto como Base64)
+    if (arquivo.size <= MAX_IMAGE_BYTES) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          setVistoriaAtual((prev) => ({
+            ...prev,
+            itens: prev.itens.map(item =>
+              item.id === itemId
+                ? { ...item, fotos: [...item.fotos, e.target.result] }
+                : item
+            )
+          }));
+        } catch (err) {
+          alert('Erro ao adicionar foto. Tente uma foto menor.');
+        }
+      };
+      reader.onerror = () => alert('Erro ao ler arquivo da foto.');
+      reader.readAsDataURL(arquivo);
+      return;
+    }
 
-    // Container invisível com estilos básicos
-    const container = document.createElement('div');
-    container.style.position = 'fixed';
-    container.style.left = '-10000px';
-    container.style.top = '0';
-    container.style.width = '794px';
-    container.style.background = '#fff';
-    container.style.fontFamily = 'Arial, sans-serif';
-    container.style.padding = '20px';
+    // Se passou de 2,5 MB: tenta comprimir
+    const dataURL = await compressFileToMaxDataURL(arquivo);
 
-    container.innerHTML = `
-      <div style="position:relative; min-height: 80px;">
-        <img src="${LOGO_PATH}" alt="Logo" style="position:absolute; top:0; right:0; width:120px; height:auto;" />
-        <h1 style="color:#2563eb; margin:0 0 8px; font-size:24px;">📋 Relatório de Vistoria</h1>
-      </div>
+    setVistoriaAtual((prev) => ({
+      ...prev,
+      itens: prev.itens.map(item =>
+        item.id === itemId
+          ? { ...item, fotos: [...item.fotos, dataURL] }
+          : item
+      )
+    }));
 
-      <div style="margin:16px 0; padding:12px; background:#f3f4f6; border-left:4px solid #2563eb; border-radius:8px;">
-        <p style="margin:6px 0;"><strong>📍 Endereço:</strong> ${escapeHtml(vistoria.endereco)}</p>
-        <p style="margin:6px 0;"><strong>📅 Data:</strong> ${new Date(vistoria.data).toLocaleDateString('pt-BR')}</p>
-        <p style="margin:6px 0;"><strong>🔐 Tipo:</strong> ${vistoria.tipo === 'entrada' ? 'Entrada' : 'Saída'}</p>
-        ${vistoria.responsavel ? `<p style="margin:6px 0;"><strong>👤 Responsável:</strong> ${escapeHtml(vistoria.responsavel)}</p>` : ''}
-        <p style="margin:6px 0;"><strong>📊 Total de itens:</strong> ${vistoria.itens.length}</p>
-      </div>
+  } catch (err) {
+    // Falhou a compressão -> "pula" a foto (não adiciona), como você pediu
+    console.warn('Foto ignorada: não foi possível comprimir para ≤ 2,5 MB.', err);
+    alert('Essa foto é muito grande e não pôde ser comprimida. Ela será ignorada.');
+  }
+};
 
-      <h2 style="margin:20px 0 10px; font-size:20px;">🏠 Itens Vistoriados</h2>
-    `;
 
-    // Itens + fotos
-    vistoria.itens.forEach((item, idx) => {
-      const itemDiv = document.createElement('div');
-      itemDiv.style.cssText = 'margin:16px 0; padding:12px; border:2px solid #e5e7eb; border-radius:8px; page-break-inside:avoid;';
-
-      const titulo = `Item ${idx + 1}: ${item.comodo && item.comodo.trim() ? escapeHtml(item.comodo) : 'Sem identificação'}`;
-
-      let html = `
-        <h3 style="margin:0 0 8px; font-size:18px;">${titulo}</h3>
-        <div><strong>Estado:</strong> <span style="display:inline-block;padding:4px 10px;border-radius:12px;font-weight:bold;background:${item.estado==='bom'?'#dcfce7':item.estado==='regular'?'#fef9c3':'#fee2e2'};color:${item.estado==='bom'?'#166534':item.estado==='regular'?'#854d0e':'#991b1b'};">${(item.estado||'').toUpperCase()}</span></div>
-      `;
-      if (item.descricao && item.descricao.trim()) {
-        html += `<div style="margin-top:8px;"><strong>Descrição:</strong><div>${escapeHtml(item.descricao)}</div></div>`;
-      }
-
-      // Fotos
-      const fotos = item.fotos || [];
-      if (fotos.length > 0) {
-        html += `<div style="margin-top:8px;"><strong>Fotos (${fotos.length}):</strong></div>`;
-        const grid = document.createElement('div');
-        grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:8px;';
-
-        fotos.forEach((dataUrl, i) => {
-          const box = document.createElement('div');
-          box.style.cssText = 'border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;background:#f9fafb;';
-          box.innerHTML = `
-            <img src="${dataUrl}" alt="Foto ${i + 1}" style="width:100%;height:auto;display:block;" />
-            <div style="padding:6px;font-size:12px;color:#6b7280;text-align:center;">Foto ${i + 1}</div>
-          `;
-          grid.appendChild(box);
-        });
-
-        itemDiv.innerHTML = html;
-        itemDiv.appendChild(grid);
-      } else {
-        html += `<div style="color:#9ca3af;margin-top:8px;">Sem fotos anexadas</div>`;
-        itemDiv.innerHTML = html;
-      }
-
-      container.appendChild(itemDiv);
-    });
-
-    const footer = document.createElement('div');
-    footer.style.cssText = 'margin-top:24px;padding-top:12px;border-top:2px solid #e5e7eb;color:#6b7280;font-size:12px;text-align:center;';
-    footer.innerHTML = `<p>Relatório gerado em ${new Date().toLocaleDateString('pt-BR')} às ${new Date().toLocaleTimeString('pt-BR')}</p>`;
-    container.appendChild(footer);
-
-    document.body.appendChild(container);
-
-    const filename = `vistoria-${normalizeFileName(vistoria.endereco)}-${vistoria.data}.pdf`;
-    const opt = {
-      margin:       10,
-      filename,
-      image:        { type: 'jpeg', quality: 0.95 },
-      html2canvas:  { scale: 2, useCORS: true },
-      jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
-    };
-
-    try {
-      await html2pdf().from(container).set(opt).save();
-    } catch (e) {
-      console.error('Erro ao gerar PDF:', e);
-      alert('Erro ao gerar PDF. Tente novamente.');
-    } finally {
-      if (container.parentNode) container.parentNode.removeChild(container);
-      setGerandoPDF(false);
+  const removerFoto = (itemId, fotoIndex) => {
+    if (confirm('Deseja remover esta foto?')) {
+      setVistoriaAtual({
+        ...vistoriaAtual,
+        itens: vistoriaAtual.itens.map(item =>
+          item.id === itemId
+            ? { ...item, fotos: item.fotos.filter((_, i) => i !== fotoIndex) }
+            : item
+        )
+      });
     }
   };
 
-  // Telas
+  const excluirVistoria = (id) => {
+    if (confirm('Deseja realmente excluir esta vistoria?')) {
+      setVistorias(vistorias.filter(v => v.id !== id));
+    }
+  };
+
+  const gerarRelatorio = (vistoria) => {
+    try {
+      const conteudo = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vistoria - ${vistoria.endereco}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { 
+      font-family: Arial, sans-serif; 
+      padding: 20px; 
+      max-width: 800px; 
+      margin: 0 auto;
+      background: #f9fafb;
+    }
+    .container { background: white; padding: 20px; border-radius: 8px; }
+    h1 { color: #2563eb; margin-bottom: 20px; font-size: 24px; }
+    h2 { color: #374151; margin: 30px 0 15px; font-size: 20px; }
+    h3 { color: #1f2937; margin: 15px 0 10px; font-size: 18px; }
+    .info { 
+      margin: 20px 0; 
+      padding: 15px; 
+      background: #f3f4f6; 
+      border-radius: 8px;
+      border-left: 4px solid #2563eb;
+    }
+    .info p { margin: 8px 0; line-height: 1.6; }
+    .item { 
+      margin: 20px 0; 
+      padding: 15px; 
+      border: 2px solid #e5e7eb; 
+      border-radius: 8px;
+      page-break-inside: avoid;
+    }
+    .fotos { 
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+      gap: 15px;
+      margin-top: 15px;
+    }
+    .foto-container {
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #f9fafb;
+    }
+    .foto { 
+      width: 100%; 
+      height: auto;
+      display: block;
+    }
+    .foto-legenda {
+      padding: 8px;
+      font-size: 12px;
+      color: #6b7280;
+      text-align: center;
+    }
+    .estado { 
+      display: inline-block; 
+      padding: 6px 12px; 
+      border-radius: 12px; 
+      font-size: 13px; 
+      font-weight: bold;
+      margin: 10px 0;
+    }
+    .bom { background: #dcfce7; color: #166534; }
+    .regular { background: #fef9c3; color: #854d0e; }
+    .ruim { background: #fee2e2; color: #991b1b; }
+    .campo { margin: 10px 0; }
+    .campo strong { color: #374151; }
+    .campo-valor { color: #1f2937; margin-top: 4px; }
+    @media print {
+      body { background: white; }
+      .container { padding: 0; }
+    }
+    @media (max-width: 600px) {
+      body { padding: 10px; }
+      .container { padding: 15px; }
+      h1 { font-size: 20px; }
+      h2 { font-size: 18px; }
+      .fotos { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>📋 Relatório de Vistoria</h1>
+    
+    <div class="info">
+      <p><strong>📍 Endereço:</strong> ${vistoria.endereco}</p>
+      <p><strong>📅 Data:</strong> ${new Date(vistoria.data).toLocaleDateString('pt-BR')}</p>
+      <p><strong>🔑 Tipo:</strong> ${vistoria.tipo === 'entrada' ? 'Entrada' : 'Saída'}</p>
+      ${vistoria.responsavel ? `<p><strong>👤 Responsável:</strong> ${vistoria.responsavel}</p>` : ''}
+      <p><strong>📊 Total de itens:</strong> ${vistoria.itens.length}</p>
+    </div>
+    
+    <h2>🏠 Itens Vistoriados</h2>
+    
+    ${vistoria.itens.length === 0 ? '<p style="color: #6b7280; padding: 20px; text-align: center;">Nenhum item vistoriado</p>' : ''}
+    
+    ${vistoria.itens.map((item, index) => `
+      <div class="item">
+        <h3>Item ${index + 1}: ${item.comodo || 'Sem identificação'}</h3>
+        
+        <div class="campo">
+          <strong>Estado:</strong>
+          <div><span class="estado ${item.estado}">${item.estado.toUpperCase()}</span></div>
+        </div>
+        
+        ${item.descricao ? `
+          <div class="campo">
+            <strong>Descrição:</strong>
+            <div class="campo-valor">${item.descricao}</div>
+          </div>
+        ` : ''}
+        
+        ${item.fotos.length > 0 ? `
+          <div class="campo">
+            <strong>Fotos (${item.fotos.length}):</strong>
+            <div class="fotos">
+              ${item.fotos.map((foto, fotoIndex) => `
+                <div class="foto-container">
+                  <img src="${foto}" class="foto" alt="Foto ${fotoIndex + 1}" />
+                  <div class="foto-legenda">Foto ${fotoIndex + 1}</div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        ` : '<p style="color: #9ca3af; margin-top: 10px;">Sem fotos anexadas</p>'}
+      </div>
+    `).join('')}
+    
+    <div style="margin-top: 40px; padding-top: 20px; border-top: 2px solid #e5e7eb; color: #6b7280; font-size: 12px; text-align: center;">
+      <p>Relatório gerado em ${new Date().toLocaleDateString('pt-BR')} às ${new Date().toLocaleTimeString('pt-BR')}</p>
+    </div>
+  </div>
+</body>
+</html>`;
+
+      const blob = new Blob([conteudo], { type: 'text/html;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const nomeArquivo = `vistoria-${vistoria.endereco.replace(/[^a-zA-Z0-9]/g, '-')}-${vistoria.data}.html`;
+
+      a.href = url;
+      a.download = nomeArquivo;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+
+      setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 100);
+
+      alert('Relatório baixado! Verifique seus downloads.');
+    } catch (e) {
+      console.error('Erro ao gerar relatório:', e);
+      alert('Erro ao gerar relatório. Tente novamente.');
+    }
+  };
+
+  // ---------- TELAS ----------
+  // Tela: Lista de Vistorias
   if (tela === 'lista') {
     return (
       <div className="min-h-screen bg-gray-50 p-4 pb-20">
@@ -471,20 +513,18 @@ function VistoriaApp() {
                       <p className="text-gray-600 text-sm mt-1">
                         {new Date(v.data).toLocaleDateString('pt-BR')} • {v.tipo === 'entrada' ? 'Entrada' : 'Saída'}
                       </p>
-                      <p className="text-gray-500 text-sm mt-1">
-                        {v.itens.length} {v.itens.length === 1 ? 'item' : 'itens'}
-                      </p>
+                      <p className="text-gray-500 text-sm mt-1">{v.itens.length} {v.itens.length === 1 ? 'item' : 'itens'}</p>
                     </div>
                     <div className="flex flex-col gap-2">
                       <button
-                        onClick={() => gerarRelatorioPDF(v)}
+                        onClick={() => gerarRelatorio(v)}
                         className="text-green-600 hover:bg-green-50 active:bg-green-100 p-2 rounded"
-                        title="Baixar relatório (PDF)"
+                        title="Baixar relatório"
                       >
                         ⬇️
                       </button>
                       <button
-                        onClick={() => { setVistoriaAtual({ ...v }); setTela('nova'); }}
+                        onClick={() => { setVistoriaAtual({...v}); setTela('nova'); }}
                         className="text-blue-600 hover:bg-blue-50 active:bg-blue-100 p-2 rounded"
                         title="Editar"
                       >
@@ -504,19 +544,11 @@ function VistoriaApp() {
             </div>
           )}
         </div>
-
-        {gerandoPDF && (
-          <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg p-4 shadow-md text-gray-700">
-              ⏳ Gerando PDF...
-            </div>
-          </div>
-        )}
       </div>
     );
   }
 
-  // Tela de edição
+  // Tela: Nova/Editar Vistoria
   return (
     <div className="min-h-screen bg-gray-50 p-4 pb-32">
       <div className="max-w-4xl mx-auto">
@@ -524,7 +556,9 @@ function VistoriaApp() {
           <div className="flex items-center gap-2 mb-4">
             <button
               onClick={() => {
-                if (confirm('Deseja sair? As alterações serão salvas como rascunho.')) setTela('lista');
+                if (confirm('Deseja sair? As alterações serão salvas como rascunho.')) {
+                  setTela('lista');
+                }
               }}
               className="text-gray-600 hover:bg-gray-100 active:bg-gray-200 p-2 rounded"
             >
@@ -533,7 +567,9 @@ function VistoriaApp() {
             <h1 className="text-xl font-bold text-gray-800 flex-1 truncate">
               {vistoriaAtual.endereco || 'Nova Vistoria'}
             </h1>
-            <span className={salvando ? 'text-green-600 animate-pulse' : 'text-gray-400'} title="Salvar">💾</span>
+            <span className={salvando ? 'text-green-600 animate-pulse' : 'text-gray-400'} title="Salvar">
+              💾
+            </span>
           </div>
 
           <div className="space-y-4">
@@ -558,6 +594,7 @@ function VistoriaApp() {
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
               </div>
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Tipo</label>
                 <select
@@ -618,7 +655,7 @@ function VistoriaApp() {
                       <label className="block text-sm font-medium text-gray-700 mb-1">Cômodo</label>
                       <input
                         type="text"
-                        value={item.comodo || ''}
+                        value={item.comodo}
                         onChange={(e) => atualizarItem(item.id, 'comodo', e.target.value)}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                         placeholder="Ex: Sala, Quarto 1, Cozinha"
@@ -628,7 +665,7 @@ function VistoriaApp() {
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Descrição</label>
                       <textarea
-                        value={item.descricao || ''}
+                        value={item.descricao}
                         onChange={(e) => atualizarItem(item.id, 'descricao', e.target.value)}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                         placeholder="Descreva o estado ou observações"
@@ -639,7 +676,7 @@ function VistoriaApp() {
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Estado</label>
                       <select
-                        value={item.estado || 'bom'}
+                        value={item.estado}
                         onChange={(e) => atualizarItem(item.id, 'estado', e.target.value)}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       >
@@ -651,34 +688,40 @@ function VistoriaApp() {
 
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Fotos <span className="text-gray-400">(total: {item.fotos?.length || 0})</span>
+                        Fotos ({item.fotos.length})
                       </label>
+                      <button
+                        onClick={() => {
+                          const input = document.createElement('input');
+                          input.type = 'file';
+                          input.accept = 'image/*';
+                          input.capture = 'environment';
+                          input.onchange = (e) => {
+                            if (e.target.files && e.target.files[0]) {
+                              adicionarFoto(item.id, e.target.files[0]);
+                            }
+                          };
+                          input.click();
+                        }}
+                        className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-gray-200 active:bg-gray-300 w-full justify-center"
+                      >
+                        <span>📷</span>
+                        Adicionar Foto
+                      </button>
 
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          onClick={() => abrirCamera((files) => adicionarFotos(item.id, files))}
-                          className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg w-full"
-                        >
-                          📷 Câmera
-                        </button>
-
-                        <button
-                          onClick={() => abrirGaleria((files) => adicionarFotos(item.id, files))}
-                          className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg w-full"
-                        >
-                          🖼️ Galeria
-                        </button>
-                      </div>
-
-                      {/* mini-grid com as fotos */}
-                      {item.fotos?.length > 0 && (
+                      {item.fotos.length > 0 && (
                         <div className="grid grid-cols-2 gap-2 mt-3">
-                          {item.fotos.map((foto, i) => (
-                            <div key={i} className="relative">
-                              <img src={foto} alt={`Foto ${i + 1}`} className="w-full h-32 object-cover rounded-lg" />
+                          {item.fotos.map((foto, fotoIndex) => (
+                            <div key={fotoIndex} className="relative">
+                              <img 
+                                src={foto} 
+                                className="w-full h-32 object-cover rounded-lg" 
+                                alt={`Foto ${fotoIndex + 1}`}
+                                loading="lazy"
+                              />
                               <button
-                                onClick={() => removerFoto(item.id, i)}
-                                className="absolute top-1 right-1 bg-red-600 text-white px-2 py-1 rounded-full hover:bg-red-700"
+                                onClick={() => removerFoto(item.id, fotoIndex)}
+                                className="absolute top-1 right-1 bg-red-600 text-white px-2 py-1 rounded-full hover:bg-red-700 active:bg-red-800"
                                 title="Remover foto"
                               >
                                 ×
@@ -699,7 +742,9 @@ function VistoriaApp() {
           <div className="max-w-4xl mx-auto flex gap-3">
             <button
               onClick={() => {
-                if (confirm('Deseja sair? As alterações serão salvas como rascunho.')) setTela('lista');
+                if (confirm('Deseja sair? As alterações serão salvas como rascunho.')) {
+                  setTela('lista');
+                }
               }}
               className="flex-1 bg-gray-200 text-gray-700 px-6 py-3 rounded-lg hover:bg-gray-300 active:bg-gray-400 font-medium"
             >
@@ -710,38 +755,21 @@ function VistoriaApp() {
               disabled={salvando}
               className="flex-1 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 active:bg-blue-800 font-medium disabled:bg-blue-400 flex items-center justify-center gap-2"
             >
-              {salvando ? (<><span>⏳</span> Salvando...</>) : (<><span>💾</span> Salvar</>)}
+              {salvando ? (
+                <>
+                  <span>⏳</span>
+                  Salvando...
+                </>
+              ) : (
+                <>
+                  <span>💾</span>
+                  Salvar
+                </>
+              )}
             </button>
           </div>
         </div>
-
-        {gerandoPDF && (
-          <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg p-4 shadow-md text-gray-700">⏳ Gerando PDF...</div>
-          </div>
-        )}
       </div>
     </div>
   );
-}
-
-/* =========================
-   3) HELPERS
-   ========================= */
-function escapeHtml(str = '') {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
-
-function normalizeFileName(s = '') {
-  return s
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-zA-Z0-9]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/(^-|-$)/g, '')
-    .toLowerCase();
 }
