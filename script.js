@@ -636,26 +636,23 @@ function VistoriaApp() {
                         Fotos ({item.fotos.length})
                       </label>
                       <button
-                        onClick={() => {
-                          const escolha = confirm('Deseja tirar uma foto? (Câmera traseira)') ? 'camera' : 'galeria';
-                          const input = document.createElement('input');
-                          input.type = 'file';
-                          input.accept = 'image/*';
-                          if (escolha === 'camera') {
-                            input.capture = 'environment';
-                          }
-                          input.onchange = (e) => {
-                            if (e.target.files && e.target.files[0]) {
-                              adicionarFoto(item.id, e.target.files[0]);
-                            }
-                          };
-                          input.click();
-                        }}
-                        className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-gray-200 active:bg-gray-300 w-full justify-center"
-                      >
-                        <span>📷</span>
-                        Adicionar Foto
-                      </button>
+    onClick={() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.capture = 'environment'; // Ativa câmera traseira por padrão
+    input.onchange = (e) => {
+      if (e.target.files && e.target.files[0]) {
+        adicionarFoto(item.id, e.target.files[0]);
+      }
+    };
+    input.click();
+  }}
+  className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-gray-200 active:bg-gray-300 w-full justify-center"
+>
+  <span>📷</span>
+  Adicionar Foto
+</button>
 
                       {item.fotos.length > 0 && (
                         <div className="grid grid-cols-2 gap-2 mt-3">
@@ -721,3 +718,4 @@ function VistoriaApp() {
     </div>
   );
 }
+
