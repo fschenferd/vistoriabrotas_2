@@ -1,4 +1,3 @@
-// App de Vistoria - versão sem build, usando React via CDN
 const { useState, useEffect } = React;
 
 function VistoriaApp() {
@@ -134,96 +133,96 @@ function VistoriaApp() {
     });
   };
 
- const adicionarFoto = (itemId, arquivo) => {
-  if (!arquivo) return;
+  const adicionarFoto = (itemId, arquivo) => {
+    if (!arquivo) return;
 
-  // Verificar tamanho: 2 MB = 2 * 1024 * 1024 bytes
-  const MAX_SIZE = 2 * 1024 * 1024;
+    // Limite: 2 MB = 2 * 1024 * 1024 bytes
+    const MAX_SIZE = 2 * 1024 * 1024;
 
-  if (arquivo.size <= MAX_SIZE) {
-    // Menor ou igual a 2 MB: processar normalmente
+    if (arquivo.size <= MAX_SIZE) {
+      // Menor ou igual a 2 MB: processar normalmente
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          setVistoriaAtual({
+            ...vistoriaAtual,
+            itens: vistoriaAtual.itens.map(item =>
+              item.id === itemId
+                ? { ...item, fotos: [...item.fotos, e.target.result] }
+                : item
+            )
+          });
+        } catch (err) {
+          alert('Erro ao adicionar foto. Tente uma foto menor.');
+        }
+      };
+      reader.onerror = () => alert('Erro ao ler arquivo da foto.');
+      reader.readAsDataURL(arquivo);
+      return;
+    }
+
+    // Maior que 2 MB: tentar redimensionar/comprimir
+    const img = new Image();
     const reader = new FileReader();
+
     reader.onload = (e) => {
-      try {
-        setVistoriaAtual({
-          ...vistoriaAtual,
-          itens: vistoriaAtual.itens.map(item =>
-            item.id === itemId
-              ? { ...item, fotos: [...item.fotos, e.target.result] }
-              : item
-          )
-        });
-      } catch (err) {
-        alert('Erro ao adicionar foto. Tente uma foto menor.');
-      }
+      img.src = e.target.result;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+
+        // Redimensionar para 1024px de largura (mantendo proporção)
+        const MAX_WIDTH = 1024;
+        let width = img.width;
+        let height = img.height;
+
+        if (width > MAX_WIDTH) {
+          height = Math.round((height * MAX_WIDTH) / width);
+          width = MAX_WIDTH;
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // Tentar compressão com qualidade 0.8
+        let dataURL = canvas.toDataURL('image/jpeg', 0.8);
+
+        // Verificar se está dentro do limite
+        const byteString = atob(dataURL.split(',')[1]);
+        if (byteString.length <= MAX_SIZE) {
+          // Sucesso: usar imagem comprimida
+          setVistoriaAtual({
+            ...vistoriaAtual,
+            itens: vistoriaAtual.itens.map(item =>
+              item.id === itemId
+                ? { ...item, fotos: [...item.fotos, dataURL] }
+                : item
+            )
+          });
+          return;
+        }
+
+        // Falha na compressão: usar original (sem erro)
+        const reader2 = new FileReader();
+        reader2.onload = (e2) => {
+          setVistoriaAtual({
+            ...vistoriaAtual,
+            itens: vistoriaAtual.itens.map(item =>
+              item.id === itemId
+                ? { ...item, fotos: [...item.fotos, e2.target.result] }
+                : item
+            )
+          });
+        };
+        reader2.onerror = () => alert('Erro ao ler arquivo da foto original.');
+        reader2.readAsDataURL(arquivo);
+      };
     };
+
     reader.onerror = () => alert('Erro ao ler arquivo da foto.');
     reader.readAsDataURL(arquivo);
-    return;
-  }
-
-  // Maior que 2 MB: tentar redimensionar/comprimir
-  const img = new Image();
-  const reader = new FileReader();
-
-  reader.onload = (e) => {
-    img.src = e.target.result;
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-
-      // Redimensionar para 1024px de largura (mantendo proporção)
-      const MAX_WIDTH = 1024;
-      let width = img.width;
-      let height = img.height;
-
-      if (width > MAX_WIDTH) {
-        height = Math.round((height * MAX_WIDTH) / width);
-        width = MAX_WIDTH;
-      }
-
-      canvas.width = width;
-      canvas.height = height;
-      ctx.drawImage(img, 0, 0, width, height);
-
-      // Tentar compressão com qualidade 0.8
-      let dataURL = canvas.toDataURL('image/jpeg', 0.8);
-
-      // Verificar se está dentro do limite
-      const byteString = atob(dataURL.split(',')[1]);
-      if (byteString.length <= MAX_SIZE) {
-        // Sucesso: usar imagem comprimida
-        setVistoriaAtual({
-          ...vistoriaAtual,
-          itens: vistoriaAtual.itens.map(item =>
-            item.id === itemId
-              ? { ...item, fotos: [...item.fotos, dataURL] }
-              : item
-          )
-        });
-        return;
-      }
-
-      // Falha na compressão: usar original (sem erro)
-      const reader2 = new FileReader();
-      reader2.onload = (e2) => {
-        setVistoriaAtual({
-          ...vistoriaAtual,
-          itens: vistoriaAtual.itens.map(item =>
-            item.id === itemId
-              ? { ...item, fotos: [...item.fotos, e2.target.result] }
-              : item
-          )
-        });
-      };
-      reader2.onerror = () => alert('Erro ao ler arquivo da foto original.');
-      reader2.readAsDataURL(arquivo);
-    };
   };
-
-  reader.onerror = () => alert('Erro ao ler arquivo da foto.');
-  reader.readAsDataURL(arquivo);
-};
 
   const removerFoto = (itemId, fotoIndex) => {
     if (confirm('Deseja remover esta foto?')) {
@@ -244,9 +243,9 @@ function VistoriaApp() {
     }
   };
 
-  const gerarRelatorio = (vistoria) => const gerarRelatorio = (vistoria) => {
-  try {
-    const conteudo = `<!DOCTYPE html>
+  const gerarRelatorio = (vistoria) => {
+    try {
+      const conteudo = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
@@ -335,14 +334,14 @@ function VistoriaApp() {
     <h1>📋 Relatório de Vistoria</h1>
     
     <div class="info">
-      <p><strong> Endereço:</strong> ${vistoria.endereco}</p>
-      <p><strong> Data:</strong> ${new Date(vistoria.data).toLocaleDateString('pt-BR')}</p>
-      <p><strong> Tipo:</strong> ${vistoria.tipo === 'entrada' ? 'Entrada' : 'Saída'}</p>
+      <p><strong>📍 Endereço:</strong> ${vistoria.endereco}</p>
+      <p><strong>📅 Data:</strong> ${new Date(vistoria.data).toLocaleDateString('pt-BR')}</p>
+      <p><strong>🔑 Tipo:</strong> ${vistoria.tipo === 'entrada' ? 'Entrada' : 'Saída'}</p>
       ${vistoria.responsavel ? `<p><strong>👤 Responsável:</strong> ${vistoria.responsavel}</p>` : ''}
-      <p><strong> Total de itens:</strong> ${vistoria.itens.length}</p>
+      <p><strong>📊 Total de itens:</strong> ${vistoria.itens.length}</p>
     </div>
     
-    <h2> Itens Vistoriados</h2>
+    <h2>🏠 Itens Vistoriados</h2>
     
     ${vistoria.itens.length === 0 ? '<p style="color: #6b7280; padding: 20px; text-align: center;">Nenhum item vistoriado</p>' : ''}
     
@@ -385,50 +384,38 @@ function VistoriaApp() {
 </body>
 </html>`;
 
-    // Criar um elemento temporário para renderizar o HTML
-    const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = conteudo;
+      // Calcular tamanho em bytes
+      const tamanhoBytes = new TextEncoder().encode(conteudo).length;
+      const tamanhoMB = tamanhoBytes / (1024 * 1024);
 
-    // Adicionar ao DOM (necessário para o html2pdf)
-    document.body.appendChild(tempDiv);
+      if (tamanhoMB > 50) {
+        if (!confirm(`O relatório está com ${tamanhoMB.toFixed(1)} MB. Isso pode causar problemas ao abrir. Deseja continuar?`)) {
+          return;
+        }
+      }
 
-    // Gerar PDF
-    const options = {
-      margin: 10,
-      filename: `vistoria-${vistoria.endereco.replace(/[^a-zA-Z0-9]/g, '-')}-${vistoria.data}.pdf`,
-      image: { type: 'jpeg', quality: 0.98 },
-      html2canvas: { scale: 2 },
-      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
-    };
-
-    html2pdf().from(tempDiv).set(options).save().then(() => {
-      // Remover elemento temporário
-      document.body.removeChild(tempDiv);
-      alert('PDF baixado! Verifique seus downloads.');
-    }).catch(err => {
-      // Falha ao gerar PDF: tentar HTML como fallback
-      document.body.removeChild(tempDiv);
-      alert('Erro ao gerar PDF. Baixando como HTML...');
       const blob = new Blob([conteudo], { type: 'text/html;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       const nomeArquivo = `vistoria-${vistoria.endereco.replace(/[^a-zA-Z0-9]/g, '-')}-${vistoria.data}.html`;
+
       a.href = url;
       a.download = nomeArquivo;
       a.style.display = 'none';
       document.body.appendChild(a);
       a.click();
+
       setTimeout(() => {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
       }, 100);
-    });
 
-  } catch (e) {
-    console.error('Erro ao gerar relatório:', e);
-    alert('Erro ao gerar relatório. Tente novamente.');
-  }
-};
+      alert('Relatório baixado! Verifique seus downloads.');
+    } catch (e) {
+      console.error('Erro ao gerar relatório:', e);
+      alert('Erro ao gerar relatório. Tente novamente.');
+    }
+  };
 
   // ---------- TELAS ----------
   // Tela: Lista de Vistorias
@@ -650,10 +637,13 @@ function VistoriaApp() {
                       </label>
                       <button
                         onClick={() => {
+                          const escolha = confirm('Deseja tirar uma foto? (Câmera traseira)') ? 'camera' : 'galeria';
                           const input = document.createElement('input');
                           input.type = 'file';
                           input.accept = 'image/*';
-                          input.capture = 'environment';
+                          if (escolha === 'camera') {
+                            input.capture = 'environment';
+                          }
                           input.onchange = (e) => {
                             if (e.target.files && e.target.files[0]) {
                               adicionarFoto(item.id, e.target.files[0]);
@@ -671,9 +661,9 @@ function VistoriaApp() {
                         <div className="grid grid-cols-2 gap-2 mt-3">
                           {item.fotos.map((foto, fotoIndex) => (
                             <div key={fotoIndex} className="relative">
-                              <img 
-                                src={foto} 
-                                className="w-full h-32 object-cover rounded-lg" 
+                              <img
+                                src={foto}
+                                className="w-full h-32 object-cover rounded-lg"
                                 alt={`Foto ${fotoIndex + 1}`}
                                 loading="lazy"
                               />
@@ -731,4 +721,3 @@ function VistoriaApp() {
     </div>
   );
 }
-
