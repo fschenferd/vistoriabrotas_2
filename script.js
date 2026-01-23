@@ -1,112 +1,4 @@
 // App de Vistoria - versão sem build, usando React via CDN
-
-// === Limite e compressão das imagens ===
-const MAX_IMAGE_BYTES = 2.5 * 1024 * 1024; // 2,5 MB
-const JPEG_START_QUALITY = 0.85;
-const JPEG_MIN_QUALITY = 0.60;
-const MAX_SIDE_PX = 1920;     // lado maior inicial (ajuda a reduzir sem perder muito)
-
-function fileToImageFromDataURL(dataURL) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('Imagem inválida.'));
-    img.src = dataURL;
-  });
-}
-
-function canvasToBlob(canvas, quality) {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (blob) => blob ? resolve(blob) : reject(new Error('Falha ao exportar imagem.')),
-      'image/jpeg',
-      quality
-    );
-  });
-}
-
-function blobToDataURL(blob) {
-  return new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onerror = () => reject(new Error('Falha ao converter blob.'));
-    fr.onload = () => resolve(fr.result); // dataURL
-    fr.readAsDataURL(blob);
-  });
-}
-
-/**
- * Recebe um File muito grande e devolve um dataURL JPEG <= 2,5 MB.
- * Estratégia:
- *  - Reduz qualidade de 0.85 até 0.60
- *  - Se ainda estiver grande, reduz dimensões (90% a cada passo) até ~1280px
- *  - Se mesmo assim não atingir <= 2,5MB: lança erro (vamos "pular" a foto)
- */
-async function compressFileToMaxDataURL(file, {
-  maxBytes = MAX_IMAGE_BYTES,
-  startQuality = JPEG_START_QUALITY,
-  minQuality = JPEG_MIN_QUALITY,
-  maxSide = MAX_SIDE_PX
-} = {}) {
-  // 1) Ler o arquivo como DataURL (compatível com iPhone/Safari e com seu fluxo atual)
-  const base64 = await new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onerror = () => reject(new Error('Falha ao ler arquivo.'));
-    fr.onload = () => resolve(fr.result);
-    fr.readAsDataURL(file);
-  });
-
-  // 2) Criar imagem e canvas
-  const img = await fileToImageFromDataURL(base64);
-  let srcW = img.naturalWidth || img.width;
-  let srcH = img.naturalHeight || img.height;
-
-  // Começamos respeitando um lado máximo (ajuda muito em fotos 4k)
-  const scale0 = Math.min(1, maxSide / Math.max(srcW, srcH));
-  let tw = Math.round(srcW * scale0);
-  let th = Math.round(srcH * scale0);
-
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d');
-
-  async function redrawAndExport(quality) {
-    canvas.width = tw;
-    canvas.height = th;
-    ctx.clearRect(0, 0, tw, th);
-    ctx.drawImage(img, 0, 0, tw, th);
-    const blob = await canvasToBlob(canvas, quality);
-    return blob;
-  }
-
-  // 3) Tenta qualidades decrescentes
-  let quality = startQuality;
-  let blob = await redrawAndExport(quality);
-
-  while (blob.size > maxBytes && quality > minQuality) {
-    quality = Math.max(minQuality, +(quality - 0.05).toFixed(2));
-    blob = await redrawAndExport(quality);
-  }
-
-  // 4) Se ainda estiver grande, reduz dimensões progressivamente
-  while (blob.size > maxBytes && (tw > 1280 || th > 1280)) {
-    tw = Math.round(tw * 0.9);
-    th = Math.round(th * 0.9);
-    blob = await redrawAndExport(quality);
-
-    if (quality > minQuality && blob.size > maxBytes) {
-      quality = Math.max(minQuality, +(quality - 0.05).toFixed(2));
-      blob = await redrawAndExport(quality);
-    }
-  }
-
-  if (blob.size > maxBytes) {
-    throw new Error('nao_conseguiu_comprimir_ate_2_5mb');
-  }
-
-  // 5) Converte o Blob final para dataURL (para manter seu fluxo atual)
-  return await blobToDataURL(blob);
-}
-
-
 const { useState, useEffect } = React;
 
 function VistoriaApp() {
@@ -242,52 +134,96 @@ function VistoriaApp() {
     });
   };
 
- 
-const adicionarFoto = async (itemId, arquivo) => {
+ const adicionarFoto = (itemId, arquivo) => {
   if (!arquivo) return;
 
-  try {
-    // Se já está <= 2,5 MB, mantém o fluxo original (lê direto como Base64)
-    if (arquivo.size <= MAX_IMAGE_BYTES) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        try {
-          setVistoriaAtual((prev) => ({
-            ...prev,
-            itens: prev.itens.map(item =>
-              item.id === itemId
-                ? { ...item, fotos: [...item.fotos, e.target.result] }
-                : item
-            )
-          }));
-        } catch (err) {
-          alert('Erro ao adicionar foto. Tente uma foto menor.');
-        }
-      };
-      reader.onerror = () => alert('Erro ao ler arquivo da foto.');
-      reader.readAsDataURL(arquivo);
-      return;
-    }
+  // Verificar tamanho: 2 MB = 2 * 1024 * 1024 bytes
+  const MAX_SIZE = 2 * 1024 * 1024;
 
-    // Se passou de 2,5 MB: tenta comprimir
-    const dataURL = await compressFileToMaxDataURL(arquivo);
-
-    setVistoriaAtual((prev) => ({
-      ...prev,
-      itens: prev.itens.map(item =>
-        item.id === itemId
-          ? { ...item, fotos: [...item.fotos, dataURL] }
-          : item
-      )
-    }));
-
-  } catch (err) {
-    // Falhou a compressão -> "pula" a foto (não adiciona), como você pediu
-    console.warn('Foto ignorada: não foi possível comprimir para ≤ 2,5 MB.', err);
-    alert('Essa foto é muito grande e não pôde ser comprimida. Ela será ignorada.');
+  if (arquivo.size <= MAX_SIZE) {
+    // Menor ou igual a 2 MB: processar normalmente
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        setVistoriaAtual({
+          ...vistoriaAtual,
+          itens: vistoriaAtual.itens.map(item =>
+            item.id === itemId
+              ? { ...item, fotos: [...item.fotos, e.target.result] }
+              : item
+          )
+        });
+      } catch (err) {
+        alert('Erro ao adicionar foto. Tente uma foto menor.');
+      }
+    };
+    reader.onerror = () => alert('Erro ao ler arquivo da foto.');
+    reader.readAsDataURL(arquivo);
+    return;
   }
-};
 
+  // Maior que 2 MB: tentar redimensionar/comprimir
+  const img = new Image();
+  const reader = new FileReader();
+
+  reader.onload = (e) => {
+    img.src = e.target.result;
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+
+      // Redimensionar para 1024px de largura (mantendo proporção)
+      const MAX_WIDTH = 1024;
+      let width = img.width;
+      let height = img.height;
+
+      if (width > MAX_WIDTH) {
+        height = Math.round((height * MAX_WIDTH) / width);
+        width = MAX_WIDTH;
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      ctx.drawImage(img, 0, 0, width, height);
+
+      // Tentar compressão com qualidade 0.8
+      let dataURL = canvas.toDataURL('image/jpeg', 0.8);
+
+      // Verificar se está dentro do limite
+      const byteString = atob(dataURL.split(',')[1]);
+      if (byteString.length <= MAX_SIZE) {
+        // Sucesso: usar imagem comprimida
+        setVistoriaAtual({
+          ...vistoriaAtual,
+          itens: vistoriaAtual.itens.map(item =>
+            item.id === itemId
+              ? { ...item, fotos: [...item.fotos, dataURL] }
+              : item
+          )
+        });
+        return;
+      }
+
+      // Falha na compressão: usar original (sem erro)
+      const reader2 = new FileReader();
+      reader2.onload = (e2) => {
+        setVistoriaAtual({
+          ...vistoriaAtual,
+          itens: vistoriaAtual.itens.map(item =>
+            item.id === itemId
+              ? { ...item, fotos: [...item.fotos, e2.target.result] }
+              : item
+          )
+        });
+      };
+      reader2.onerror = () => alert('Erro ao ler arquivo da foto original.');
+      reader2.readAsDataURL(arquivo);
+    };
+  };
+
+  reader.onerror = () => alert('Erro ao ler arquivo da foto.');
+  reader.readAsDataURL(arquivo);
+};
 
   const removerFoto = (itemId, fotoIndex) => {
     if (confirm('Deseja remover esta foto?')) {
@@ -308,9 +244,9 @@ const adicionarFoto = async (itemId, arquivo) => {
     }
   };
 
-  const gerarRelatorio = (vistoria) => {
-    try {
-      const conteudo = `<!DOCTYPE html>
+  const gerarRelatorio = (vistoria) => const gerarRelatorio = (vistoria) => {
+  try {
+    const conteudo = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
@@ -318,10 +254,10 @@ const adicionarFoto = async (itemId, arquivo) => {
   <title>Vistoria - ${vistoria.endereco}</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { 
-      font-family: Arial, sans-serif; 
-      padding: 20px; 
-      max-width: 800px; 
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      max-width: 800px;
       margin: 0 auto;
       background: #f9fafb;
     }
@@ -329,22 +265,22 @@ const adicionarFoto = async (itemId, arquivo) => {
     h1 { color: #2563eb; margin-bottom: 20px; font-size: 24px; }
     h2 { color: #374151; margin: 30px 0 15px; font-size: 20px; }
     h3 { color: #1f2937; margin: 15px 0 10px; font-size: 18px; }
-    .info { 
-      margin: 20px 0; 
-      padding: 15px; 
-      background: #f3f4f6; 
+    .info {
+      margin: 20px 0;
+      padding: 15px;
+      background: #f3f4f6;
       border-radius: 8px;
       border-left: 4px solid #2563eb;
     }
     .info p { margin: 8px 0; line-height: 1.6; }
-    .item { 
-      margin: 20px 0; 
-      padding: 15px; 
-      border: 2px solid #e5e7eb; 
+    .item {
+      margin: 20px 0;
+      padding: 15px;
+      border: 2px solid #e5e7eb;
       border-radius: 8px;
       page-break-inside: avoid;
     }
-    .fotos { 
+    .fotos {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
       gap: 15px;
@@ -356,8 +292,8 @@ const adicionarFoto = async (itemId, arquivo) => {
       overflow: hidden;
       background: #f9fafb;
     }
-    .foto { 
-      width: 100%; 
+    .foto {
+      width: 100%;
       height: auto;
       display: block;
     }
@@ -367,11 +303,11 @@ const adicionarFoto = async (itemId, arquivo) => {
       color: #6b7280;
       text-align: center;
     }
-    .estado { 
-      display: inline-block; 
-      padding: 6px 12px; 
-      border-radius: 12px; 
-      font-size: 13px; 
+    .estado {
+      display: inline-block;
+      padding: 6px 12px;
+      border-radius: 12px;
+      font-size: 13px;
       font-weight: bold;
       margin: 10px 0;
     }
@@ -399,14 +335,14 @@ const adicionarFoto = async (itemId, arquivo) => {
     <h1>📋 Relatório de Vistoria</h1>
     
     <div class="info">
-      <p><strong>📍 Endereço:</strong> ${vistoria.endereco}</p>
-      <p><strong>📅 Data:</strong> ${new Date(vistoria.data).toLocaleDateString('pt-BR')}</p>
-      <p><strong>🔑 Tipo:</strong> ${vistoria.tipo === 'entrada' ? 'Entrada' : 'Saída'}</p>
+      <p><strong> Endereço:</strong> ${vistoria.endereco}</p>
+      <p><strong> Data:</strong> ${new Date(vistoria.data).toLocaleDateString('pt-BR')}</p>
+      <p><strong> Tipo:</strong> ${vistoria.tipo === 'entrada' ? 'Entrada' : 'Saída'}</p>
       ${vistoria.responsavel ? `<p><strong>👤 Responsável:</strong> ${vistoria.responsavel}</p>` : ''}
-      <p><strong>📊 Total de itens:</strong> ${vistoria.itens.length}</p>
+      <p><strong> Total de itens:</strong> ${vistoria.itens.length}</p>
     </div>
     
-    <h2>🏠 Itens Vistoriados</h2>
+    <h2> Itens Vistoriados</h2>
     
     ${vistoria.itens.length === 0 ? '<p style="color: #6b7280; padding: 20px; text-align: center;">Nenhum item vistoriado</p>' : ''}
     
@@ -449,28 +385,50 @@ const adicionarFoto = async (itemId, arquivo) => {
 </body>
 </html>`;
 
+    // Criar um elemento temporário para renderizar o HTML
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = conteudo;
+
+    // Adicionar ao DOM (necessário para o html2pdf)
+    document.body.appendChild(tempDiv);
+
+    // Gerar PDF
+    const options = {
+      margin: 10,
+      filename: `vistoria-${vistoria.endereco.replace(/[^a-zA-Z0-9]/g, '-')}-${vistoria.data}.pdf`,
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: { scale: 2 },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+    };
+
+    html2pdf().from(tempDiv).set(options).save().then(() => {
+      // Remover elemento temporário
+      document.body.removeChild(tempDiv);
+      alert('PDF baixado! Verifique seus downloads.');
+    }).catch(err => {
+      // Falha ao gerar PDF: tentar HTML como fallback
+      document.body.removeChild(tempDiv);
+      alert('Erro ao gerar PDF. Baixando como HTML...');
       const blob = new Blob([conteudo], { type: 'text/html;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       const nomeArquivo = `vistoria-${vistoria.endereco.replace(/[^a-zA-Z0-9]/g, '-')}-${vistoria.data}.html`;
-
       a.href = url;
       a.download = nomeArquivo;
       a.style.display = 'none';
       document.body.appendChild(a);
       a.click();
-
       setTimeout(() => {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
       }, 100);
+    });
 
-      alert('Relatório baixado! Verifique seus downloads.');
-    } catch (e) {
-      console.error('Erro ao gerar relatório:', e);
-      alert('Erro ao gerar relatório. Tente novamente.');
-    }
-  };
+  } catch (e) {
+    console.error('Erro ao gerar relatório:', e);
+    alert('Erro ao gerar relatório. Tente novamente.');
+  }
+};
 
   // ---------- TELAS ----------
   // Tela: Lista de Vistorias
@@ -773,3 +731,4 @@ const adicionarFoto = async (itemId, arquivo) => {
     </div>
   );
 }
+
