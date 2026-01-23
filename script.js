@@ -411,33 +411,37 @@ function VistoriaApp() {
   };
 
   // Fluxo NOVO: adicionar fotos (uma ou mais)
-  const adicionarFotos = async (itemId, fileList) => {
-    if (!fileList || fileList.length === 0) return;
+  
+const adicionarFotos = async (itemId, fileList) => {
+  if (!fileList || fileList.length === 0) return;
 
-    // Processa de forma sequencial (mais estável em mobile)
-    for (const file of Array.from(fileList)) {
-      if (!file.type || !file.type.startsWith('image/')) continue;
+  for (const file of Array.from(fileList)) {
+    // Aceitar apenas imagens que o browser consegue decodificar via <img> / canvas
+    const mime = (file.type || '').toLowerCase();
+    if (!mime.startsWith('image/')) continue;
 
-      try {
-        // Tenta processar (EXIF + compressão <= 2,5MB)
-        const blob = await processarImagem(file);
-        const fotoId = await savePhotoBlob(itemId, blob);
-
-        setVistoriaAtual(prev => ({
-          ...prev,
-          itens: prev.itens.map(it =>
-            it.id === itemId
-              ? { ...it, fotoIds: [...(it.fotoIds || []), fotoId] }
-              : it
-          )
-        }));
-      } catch (err) {
-        // Falha na compressão ou processamento -> fallback: pular (silencioso)
-        console.warn('Falha ao processar/comprimir imagem, será pulada.', err);
-        // Não interrompe fluxo
-      }
+    // HEIC/HEIF costumam falhar fora do Safari; por segurança, vamos pular
+    if (mime.includes('heic') || mime.includes('heif')) {
+      console.warn('Imagem HEIC/HEIF detectada — pulando para evitar falha de processamento.');
+      continue; // fallback: pular (mantém app estável)
     }
-  };
+
+    try {
+      const blob = await processarImagem(file);        // EXIF + compressão ≤ 2,5MB
+      const fotoId = await savePhotoBlob(itemId, blob);
+      setVistoriaAtual(prev => ({
+        ...prev,
+        itens: prev.itens.map(it =>
+          it.id === itemId ? { ...it, fotoIds: [...(it.fotoIds || []), fotoId] } : it
+        )
+      }));
+    } catch (err) {
+      // Falha na compressão ou canvas → pular automaticamente (requisito seu)
+      console.warn('Falha ao processar/comprimir imagem; pulando.', err);
+    }
+  }
+};
+
 
   // Botão "Câmera": um arquivo; Botão "Galeria/Pasta": múltiplos/dir
   const abrirCamera = (onFiles) => {
@@ -445,27 +449,31 @@ function VistoriaApp() {
     input.type = 'file';
     input.accept = 'image/*';
     input.capture = 'environment';
-    input.onchange = (e) => onFiles(e.target.files);
-    input.click();
-  };
-
-  const abrirGaleriaOuPasta = (onFiles) => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*';
-    input.multiple = true;
-    // Em browsers que suportam, permite escolher pasta
-    try {
-      input.setAttribute('webkitdirectory', '');
-      input.setAttribute('directory', '');
-    } catch (_) {}
+    input.multiple = false;
     input.onchange = (e) => {
-      // Filtra apenas imagens
-      const files = Array.from(e.target.files || []).filter(f => f.type && f.type.startsWith('image/'));
-      onFiles(files);
-    };
-    input.click();
+    const fl = e.target.files;
+    if (!fl || fl.length === 0) return;
+    // Passa como array para fluxo único de processamento
+    onFiles(Array.from(fl));
   };
+  input.click();
+
+
+ 
+// Abre a GALERIA: seleção múltipla, sem suporte a pasta
+const abrirGaleria = (onFiles) => {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.multiple = true;           // permite várias fotos
+  // NÃO usar webkitdirectory/directory aqui — isso força o seletor de pastas
+  input.onchange = (e) => {
+    const files = Array.from(e.target.files || []).filter(f => (f.type || '').startsWith('image/'));
+    onFiles(files);
+  };
+  input.click();
+};
+
 
   // Remoções
   const removerFotoBase64 = (itemId, fotoIndex) => {
@@ -886,18 +894,19 @@ function VistoriaApp() {
 
                       <div className="grid grid-cols-2 gap-2">
                         <button
-                          onClick={() => abrirCamera((files) => adicionarFotos(item.id, files))}
-                          className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-gray-200 active:bg-gray-300 w-full justify-center"
-                        >
-                          📷 Câmera
-                        </button>
-                        <button
-                          onClick={() => abrirGaleriaOuPasta((files) => adicionarFotos(item.id, files))}
-                          className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-gray-200 active:bg-gray-300 w-full justify-center"
-                        >
-                          🖼️ Galeria/Pasta
-                        </button>
-                      </div>
+                           onClick={() => abrirCamera((files) => adicionarFotos(item.id, files))}
+                           className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg w-full"
+>
+  📷 Câmera
+</button>
+
+<button
+  onClick={() => abrirGaleria((files) => adicionarFotos(item.id, files))}
+  className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg w-full"
+>
+  🖼️ Galeria
+</button>
+
 
                       <FotoGrid
                         item={item}
@@ -977,3 +986,4 @@ function normalizeFileName(s = '') {
     .replace(/(^-|-$)/g, '')
     .toLowerCase();
 }
+
