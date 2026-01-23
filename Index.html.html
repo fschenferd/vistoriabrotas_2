@@ -1,0 +1,91 @@
+
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vistoria de Imóveis</title>
+
+  <!-- Tailwind CSS via CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- React 18 + ReactDOM UMD -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+  <!-- Babel (permite usar JSX no navegador) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Dexie (IndexedDB) -->
+  <script src="https://unpkg.com/dexie@3/dist/dexie.min.js"></script>
+
+  <!-- exifr (EXIF) -->
+  <script src="https://unpkg.com/exifr/dist/exifr.min.js"></script>
+
+  <!-- html2pdf (gera PDF no navegador) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+
+  <style>
+    /* Ajustes para impressão / PDF */
+    @media print {
+      body { background: #fff; }
+    }
+    .pdf-container {
+      position: relative;
+      max-width: 800px;
+      margin: 0 auto;
+      background: #ffffff;
+      padding: 20px;
+      font-family: Arial, sans-serif;
+    }
+    .pdf-logo {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      width: 120px;
+      height: auto;
+    }
+    .rel-container * { box-sizing: border-box; }
+    .rel-title { color: #2563eb; margin-bottom: 20px; font-size: 24px; font-weight: bold; }
+    .rel-info { margin: 20px 0; padding: 15px; background: #f3f4f6; border-radius: 8px; border-left: 4px solid #2563eb; }
+    .rel-info p { margin: 8px 0; line-height: 1.6; }
+    .rel-h2 { color: #374151; margin: 30px 0 15px; font-size: 20px; font-weight: bold; }
+    .rel-item { margin: 20px 0; padding: 15px; border: 2px solid #e5e7eb; border-radius: 8px; page-break-inside: avoid; }
+    .rel-h3 { color: #1f2937; margin: 10px 0 10px; font-size: 18px; font-weight: 600; }
+    .rel-estado { display: inline-block; padding: 6px 12px; border-radius: 12px; font-size: 13px; font-weight: bold; margin: 10px 0; }
+    .rel-estado.bom { background: #dcfce7; color: #166534;}
+    .rel-estado.regular { background: #fef9c3; color: #854d0e;}
+    .rel-estado.ruim { background: #fee2e2; color: #991b1b;}
+    .rel-fotos { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 15px; margin-top: 15px; }
+    .rel-foto-box { border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; background: #f9fafb; }
+    .rel-foto { width: 100%; height: auto; display: block; }
+    .rel-legenda { padding: 8px; font-size: 12px; color: #6b7280; text-align: center; }
+    .rel-footer { margin-top: 40px; padding-top: 20px; border-top: 2px solid #e5e7eb; color: #6b7280; font-size: 12px; text-align: center; }
+    @media (max-width: 600px) {
+      .pdf-container { padding: 15px; }
+      .rel-title { font-size: 20px; }
+      .rel-h2 { font-size: 18px; }
+      .rel-fotos { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body class="bg-gray-50">
+  <div id="root"></div>
+
+  <noscript>
+    <div class="max-w-xl mx-auto m-8 p-4 bg-yellow-100 text-yellow-900 rounded">
+      Este app precisa de JavaScript para funcionar.
+    </div>
+  </noscript>
+
+  <!-- Seu código React (JSX) -->
+  <script type="text/babel" src="./script.js"></script>
+
+  <!-- Monta o app -->
+  <script type="text/babel">
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<VistoriaApp />);
+  </script>
+</body>
+</html>
+``
