@@ -712,13 +712,10 @@
                           </label>
                           <button
                             onClick={() => {
-                              const escolha = confirm('Deseja tirar uma foto? (Câmera traseira)') ? 'camera' : 'galeria';
                               const input = document.createElement('input');
                               input.type = 'file';
                               input.accept = 'image/*';
-                              if (escolha === 'camera') {
-                                input.capture = 'environment';
-                              }
+                              input.capture = 'environment'; // Ativa câmera traseira por padrão
                               input.onchange = (e) => {
                                 if (e.target.files && e.target.files[0]) {
                                   adicionarFoto(item.id, e.target.files[0]);
